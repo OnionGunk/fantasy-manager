@@ -27,8 +27,8 @@ remembers them on that device forever. Nothing personal is stored in this repo.
 To find a league ID: open the league on sleeper.com and look at the address bar.
 
 ```
-https://sleeper.com/leagues/1396275326484496384/team
-                            ^^^^^^^^^^^^^^^^^^^ this part
+https://sleeper.com/leagues/123456789012345678/team
+                            ^^^^^^^^^^^^^^^^^^ this part
 ```
 
 To reset it, click "Change settings" at the bottom of the page.
