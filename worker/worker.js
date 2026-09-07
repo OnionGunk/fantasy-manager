@@ -31,15 +31,31 @@ const NON_STARTING = ['BN', 'IR', 'TAXI'];
    list, rather than using a fixed UTC schedule, so it does not drift an
    hour when the clocks change in November. */
 const CHECK_TIMES = [
-  { day: 0, hour: 10, kind: 'lineup' },  /* Sunday morning - the big one */
+  /* Tuesday evening. Waiver claims process overnight, so this is the last
+     moment the decision can still be made. */
+  { day: 2, hour: 20, kind: 'planning' },
+
   { day: 3, hour: 8,  kind: 'lineup' },  /* Wednesday, after waivers ran */
   { day: 4, hour: 16, kind: 'lineup' },  /* Thursday, before Thursday night */
+  { day: 6, hour: 18, kind: 'lineup' },  /* Saturday, designations are final */
+  { day: 0, hour: 9,  kind: 'lineup' },  /* Sunday morning */
 
-  /* Tuesday evening. Waiver claims are processed overnight, so this is the
-     last moment the decision can still be made - and the one moment nothing
-     else in the system was reaching the user. */
-  { day: 2, hour: 20, kind: 'planning' },
+  /* Sunday late morning. Inactive lists drop about ninety minutes before
+     kickoff, so this is the last honest chance to fix anything. */
+  { day: 0, hour: 11, kind: 'lineup' },
+
+  { day: 0, hour: 15, kind: 'lineup' },  /* before the late afternoon games */
+  { day: 1, hour: 18, kind: 'lineup' },  /* before Monday night */
 ];
+
+/* Positions a flex-style slot will accept, so a replacement can be found. */
+const FLEX_SLOTS = {
+  FLEX: ['RB', 'WR', 'TE'],
+  WRRB_FLEX: ['RB', 'WR'],
+  WRRB_WRT: ['RB', 'WR', 'TE'],
+  REC_FLEX: ['WR', 'TE'],
+  SUPER_FLEX: ['QB', 'RB', 'WR', 'TE'],
+};
 
 /*
   Draft countdown. Each fires once.
@@ -217,6 +233,17 @@ function playerName(p) {
     || 'A player';
 }
 
+function slotAccepts(slot, positions) {
+  const allowed = FLEX_SLOTS[slot] || [slot];
+  return (positions || []).some((p) => allowed.indexOf(p) !== -1);
+}
+
+function todayStamp() {
+  const d = new Date();
+  const pad = (n) => (n < 10 ? '0' + n : '' + n);
+  return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+}
+
 async function findProblems(cfg) {
   const state = await getJSON(API + '/v1/state/nfl');
   const week = Number(state.display_week || state.week || 1) || 1;
@@ -236,20 +263,31 @@ async function findProblems(cfg) {
   const slots = (league.roster_positions || [])
     .filter((s) => NON_STARTING.indexOf(s) === -1);
   const starters = mine.starters || [];
+  const starting = new Set(starters.filter((id) => id && id !== '0'));
+  const reserve = new Set(mine.reserve || []);
 
-  /* Which teams have a game this week. */
+  /* Bench players are needed too, because a warning that does not name a
+     replacement is not much use to someone who never opens the app. */
+  const benchIds = (mine.players || [])
+    .filter((id) => !starting.has(id) && !reserve.has(id))
+    .slice(0, 8);
+
+  /* Which teams play this week, and which play today. */
   let playing = null;
+  let playingToday = null;
   try {
     const sched = await getJSON(API + '/schedule/nfl/regular/' + season);
+    const today = todayStamp();
     playing = new Set();
+    playingToday = new Set();
     for (const g of sched) {
-      if (g && g.week === week) { playing.add(g.home); playing.add(g.away); }
+      if (!g || g.week !== week) continue;
+      playing.add(g.home); playing.add(g.away);
+      if (g.date === today) { playingToday.add(g.home); playingToday.add(g.away); }
     }
-  } catch (e) { playing = null; }
+  } catch (e) { playing = null; playingToday = null; }
 
   const problems = [];
-
-  /* Empty slots need no lookup at all. */
   const filled = [];
   slots.forEach((slot, i) => {
     const id = starters[i];
@@ -257,20 +295,57 @@ async function findProblems(cfg) {
     else filled.push({ slot, id });
   });
 
-  /* One small request per starter. Cheap, and it avoids the huge feeds. */
-  const people = await Promise.all(filled.map((f) =>
-    getJSON(API + '/v1/players/nfl/' + f.id).catch(() => null)));
+  /* One small request per player. Still far cheaper than the huge feeds. */
+  const [people, benchPeople] = await Promise.all([
+    Promise.all(filled.map((f) =>
+      getJSON(API + '/v1/players/nfl/' + f.id).catch(() => null))),
+    Promise.all(benchIds.map((id) =>
+      getJSON(API + '/v1/players/nfl/' + id).catch(() => null))),
+  ]);
+
+  /* Bench men who could actually go in: healthy, and their team plays. */
+  const available = benchPeople.filter((p) =>
+    p && !isOut(p) && p.injury_status !== 'Doubtful'
+    && p.team && (!playing || playing.has(p.team)));
+  const used = new Set();
+
+  const replacementFor = (slot) => {
+    const fit = available.filter((p) => !used.has(p.player_id)
+      && slotAccepts(slot, p.fantasy_positions || [p.position]));
+    if (!fit.length) return null;
+    /* search_rank is Sleeper's own ordering - a decent proxy for who is
+       better, and it costs nothing extra to read. */
+    fit.sort((a, b) => (a.search_rank || 99999) - (b.search_rank || 99999));
+    used.add(fit[0].player_id);
+    return playerName(fit[0]);
+  };
 
   people.forEach((p, i) => {
     if (!p) return;
     const slot = filled[i].slot;
     const out = isOut(p);
+    const inj = String(p.injury_status || '').toUpperCase();
+
     if (out) {
-      problems.push({ kind: 'out', slot, name: playerName(p), label: out });
+      problems.push({ kind: 'out', slot, name: playerName(p), label: out,
+        fix: replacementFor(slot) });
     } else if (playing && p.team && !playing.has(p.team)) {
-      problems.push({ kind: 'bye', slot, name: playerName(p) });
+      problems.push({ kind: 'bye', slot, name: playerName(p),
+        fix: replacementFor(slot) });
+    } else if (inj === 'DOUBTFUL') {
+      problems.push({ kind: 'doubtful', slot, name: playerName(p),
+        fix: replacementFor(slot) });
+    } else if (inj === 'QUESTIONABLE' && playingToday && p.team
+               && playingToday.has(p.team)) {
+      problems.push({ kind: 'questionable', slot, name: playerName(p),
+        fix: replacementFor(slot) });
     }
   });
+
+  /* Empty slots get a suggested filler too. */
+  for (const pr of problems) {
+    if (pr.kind === 'empty' && !pr.fix) pr.fix = replacementFor(pr.slot);
+  }
 
   return { week, problems };
 }
@@ -409,20 +484,50 @@ async function maybeDraftAlert(cfg, env) {
   return true;
 }
 
-function buildMessage(week, problems) {
-  const first = problems[0];
-  let lead;
-  if (first.kind === 'empty') lead = 'Your ' + first.slot + ' slot is empty';
-  else if (first.kind === 'out') lead = first.name + ' is ' + first.label;
-  else lead = first.name + ' has no game this week';
+/*
+  One line per problem, saying what to actually do. This has to stand on its
+  own: the notification is the whole interface, not a nudge to go and read
+  something else.
+*/
+function describeProblem(p) {
+  const fix = p.fix ? (' Start ' + p.fix + ' instead.') : '';
+  if (p.kind === 'empty') {
+    return 'Your ' + p.slot + ' slot is empty.'
+      + (p.fix ? (' Put ' + p.fix + ' in it.') : '');
+  }
+  if (p.kind === 'out') {
+    const how = (p.label === 'IR') ? 'is on injured reserve'
+      : (p.label === 'SUS') ? 'is suspended'
+      : ('is ' + p.label);
+    return p.name + ' ' + how + '.' + fix;
+  }
+  if (p.kind === 'bye') return p.name + ' has no game this week.' + fix;
+  if (p.kind === 'doubtful') {
+    return p.name + ' is doubtful and will probably not play.' + fix;
+  }
+  return p.name + ' is questionable and plays today - check him before '
+    + 'kickoff.' + (p.fix ? (' If he sits, start ' + p.fix + '.') : '');
+}
 
-  const more = problems.length - 1;
+/* Guaranteed zeros first; a coin flip can wait behind them. Numbered from
+   one, because a rank of zero is falsy and would sort last by accident. */
+const PROBLEM_ORDER = { empty: 1, out: 2, bye: 3, doubtful: 4, questionable: 5 };
+
+function buildMessage(week, problems) {
+  const sorted = problems.slice().sort((a, b) =>
+    (PROBLEM_ORDER[a.kind] || 9) - (PROBLEM_ORDER[b.kind] || 9));
+
+  const lines = sorted.slice(0, 2).map(describeProblem);
+  const more = sorted.length - lines.length;
+  if (more > 0) {
+    lines.push('Plus ' + more + ' more - open the app.');
+  }
+
   return {
-    title: problems.length === 1 ? 'Fix your lineup'
-      : ('Fix your lineup - ' + problems.length + ' problems'),
-    body: lead + (more > 0
-      ? (', plus ' + more + ' other problem' + (more === 1 ? '' : 's') + '.')
-      : '.') + ' Tap to see what to do.',
+    title: sorted.length === 1 ? 'Fix your lineup'
+      : ('Fix your lineup - ' + sorted.length + ' things'),
+    body: lines.join(' '),
+    tag: 'lineup',
     week,
   };
 }
@@ -567,8 +672,17 @@ export default {
         return;
       }
 
-      /* Do not say the same thing twice. */
-      const signature = week + '|' + problems
+      /*
+        Say it once per check, not once per week.
+
+        The old rule was "never repeat", which assumed the user would also
+        open the app. They will not. So an unfixed problem gets raised again
+        at the next scheduled check - Saturday evening, Sunday morning, then
+        an hour before kickoff - and stops the moment it is fixed, because
+        fixing it changes the signature. Within a single check it still only
+        fires once, however many times the job wakes up in that hour.
+      */
+      const signature = week + '@' + due.day + ':' + due.hour + '|' + problems
         .map((p) => p.kind + ':' + (p.name || p.slot)).sort().join(',');
       if (await env.STORE.get('lastAlert') === signature) return;
 
