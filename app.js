@@ -1405,6 +1405,43 @@ async function renderNotifications(data) {
     + '. You will only hear from it when something needs fixing.', 'good');
 }
 
+/*
+  Hand the worker what it cannot work out for itself.
+
+  The worker gets 10ms of CPU, so it can never load the 15 MB player file or
+  the 2 MB projections feed. This page can. So when it runs, it posts the
+  conclusions the worker could not reach - bench upgrades, and players who
+  have just inherited a starting job - and the next scheduled alert carries
+  them.
+
+  Not circular: this page opens every time a notification is tapped, so the
+  alerts keep their own input fresh. One small write per open, which is
+  nothing against the free plan's daily allowance.
+*/
+const WORKER_ONLY_BLIND_SPOTS = ['Upgrade', 'New starter'];
+
+async function sendAdvice(data, todos) {
+  if (!PUSH_WORKER || !lastData) return;
+
+  const items = todos
+    .filter((t) => WORKER_ONLY_BLIND_SPOTS.indexOf(t.rank) !== -1)
+    .map((t) => plain(t.action))
+    .slice(0, 3);
+
+  if (!items.length) return;
+
+  try {
+    await fetch(PUSH_WORKER + '/advice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: data.week, items }),
+    });
+  } catch (e) {
+    /* Never let this get in the way of the page rendering. */
+    console.warn('Could not send advice to the alert service:', e);
+  }
+}
+
 async function enablePush() {
   const btn = el('btn-push');
   btn.disabled = true;
@@ -1599,8 +1636,9 @@ async function run(cfg) {
     el('export-block').hidden = (data.league.status === 'pre_draft');
     el('export-status').hidden = true;
 
-    /* Runs on its own; never blocks the page if the service is unreachable. */
+    /* Both run on their own; neither blocks the page if the service is down. */
     renderNotifications(data);
+    sendAdvice(data, todos);
     renderMatchup(data);
     renderRoster(data);
 

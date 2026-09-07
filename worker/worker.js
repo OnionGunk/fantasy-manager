@@ -450,11 +450,21 @@ function buildPlanningMessage(info) {
   independent of the weekly lineup checks. Runs on every wake-up.
 */
 async function maybeDraftAlert(cfg, env) {
+  /*
+    Once the draft is over this is settled forever, so record that fact and
+    stop doing any work at all.
+
+    This matters more than it looks. The earlier version deleted a key on
+    every run after the draft - 288 writes a day, for nothing, against a free
+    limit of 1,000. Deletes count as writes.
+  */
+  if (await env.STORE.get('draftDone')) return false;
+
   const league = await getJSON(API + '/v1/league/' + cfg.leagueId);
 
-  /* Once the draft is done, forget the flags and never look again. */
   if (league.status !== 'pre_draft' || !league.draft_id) {
-    await env.STORE.delete('draftSent');
+    await env.STORE.put('draftDone', '1');
+    if (await env.STORE.get('draftSent')) await env.STORE.delete('draftSent');
     return false;
   }
 
@@ -513,7 +523,7 @@ function describeProblem(p) {
    one, because a rank of zero is falsy and would sort last by accident. */
 const PROBLEM_ORDER = { empty: 1, out: 2, bye: 3, doubtful: 4, questionable: 5 };
 
-function buildMessage(week, problems) {
+function buildMessage(week, problems, extra) {
   const sorted = problems.slice().sort((a, b) =>
     (PROBLEM_ORDER[a.kind] || 9) - (PROBLEM_ORDER[b.kind] || 9));
 
@@ -522,6 +532,8 @@ function buildMessage(week, problems) {
   if (more > 0) {
     lines.push('Plus ' + more + ' more - open the app.');
   }
+  /* Something the app worked out that this worker could not. */
+  if (extra && lines.length < 3) lines.push('Also: ' + extra);
 
   return {
     title: sorted.length === 1 ? 'Fix your lineup'
@@ -569,6 +581,29 @@ export default {
       }
       await env.STORE.put('sub', JSON.stringify(body));
       await env.STORE.delete('lastAlert');
+      return json({ ok: true });
+    }
+
+    /*
+      The app knows things this worker cannot afford to work out - it holds
+      the full 15 MB player file and the 2 MB projections feed, and has no
+      10ms CPU budget. So when it is opened it posts its conclusions here,
+      and the next scheduled alert can carry them.
+
+      This is not circular: the app is opened every time a notification is
+      tapped, so the alerts themselves keep this fresh.
+    */
+    if (url.pathname === '/advice' && request.method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch (e) { return json({ error: 'bad json' }, 400); }
+      if (!body || !Array.isArray(body.items) || !body.week) {
+        return json({ error: 'missing fields' }, 400);
+      }
+      await env.STORE.put('advice', JSON.stringify({
+        week: body.week,
+        at: Date.now(),
+        items: body.items.slice(0, 3).map((s) => String(s).slice(0, 180)),
+      }));
       return json({ ok: true });
     }
 
@@ -668,7 +703,8 @@ export default {
 
       const { week, problems } = await findProblems(cfg);
       if (!problems.length) {
-        await env.STORE.delete('lastAlert');
+        /* Only spend a write if there is actually something to clear. */
+        if (await env.STORE.get('lastAlert')) await env.STORE.delete('lastAlert');
         return;
       }
 
@@ -686,7 +722,23 @@ export default {
         .map((p) => p.kind + ':' + (p.name || p.slot)).sort().join(',');
       if (await env.STORE.get('lastAlert') === signature) return;
 
-      const res = await sendPush(cfg.subscription, buildMessage(week, problems), env);
+      /*
+        Fold in whatever the app worked out, but only if it is still true:
+        same week, and less than three days old. Advice computed on Wednesday
+        can be wrong by Sunday, and stale advice is worse than none.
+      */
+      let extra = null;
+      try {
+        const stored = JSON.parse(await env.STORE.get('advice') || 'null');
+        if (stored && stored.week === week
+            && (Date.now() - stored.at) < 3 * 24 * 3600 * 1000
+            && stored.items && stored.items.length) {
+          extra = stored.items[0];
+        }
+      } catch (e) { extra = null; }
+
+      const res = await sendPush(cfg.subscription,
+        buildMessage(week, problems, extra), env);
 
       /* 404 or 410 means the phone threw the subscription away. Drop it so
          the app notices and can offer to set it up again. */
