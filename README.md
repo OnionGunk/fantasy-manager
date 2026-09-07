@@ -40,9 +40,12 @@ To reset it, click "Change settings" at the bottom of the page.
 | `index.html` | The page |
 | `styles.css` | How it looks |
 | `app.js` | Fetches Sleeper data and decides what to recommend |
+| `draft.js` | Live draft mode |
+| `trade.js` | Manual trade checker |
 | `manifest.webmanifest` | Makes it installable on a phone home screen |
-| `sw.js` | Service worker, so it opens without a signal |
+| `sw.js` | Service worker: offline shell, and shows push notifications |
 | `icons/` | Home screen icons |
+| `worker/worker.js` | The scheduled alert job (runs on Cloudflare, not here) |
 
 ## How the recommendations work
 
@@ -141,6 +144,11 @@ guarantee a zero:
 - a starter on a bye week
 - an empty starting slot
 
+Plus a one-off countdown before the draft, at 60, 30 and 10 minutes. Missing
+the draft is the worst single outcome available, so it is the one thing worth
+warning about in advance. The bands do not overlap, so a job that first sees
+the draft 33 minutes out sends the 30 and 10 minute warnings, not all three.
+
 Nothing else ever buzzes. A notification you can safely ignore becomes one you
 always ignore.
 
@@ -149,13 +157,15 @@ CPU per run, so the job never touches the 15 MB player file or the 2 MB
 projections feed. It fetches `GET /v1/players/nfl/<id>` once per starter
 instead - about 18 requests and 57 KB of parsing per run.
 
-**Clock changes.** It wakes hourly and decides for itself whether the local
-time is worth checking, rather than using a fixed UTC schedule that would
+**Clock changes.** It wakes every five minutes and decides for itself whether the local
+time is worth a check, rather than using a fixed UTC schedule that would
 drift an hour when the clocks change mid-season.
 
 **Silent failure.** A background job that dies quietly is worse than no job.
-It writes a heartbeat every run; the page reads it and warns you on screen if
-it has gone stale, so silence is never mistaken for "nothing to do".
+It writes a heartbeat at the top of each hour (the free plan allows 1,000 KV
+writes a day and the job runs every five minutes, so hourly is plenty). The
+page reads it and warns you on screen if it has gone stale, so silence is
+never mistaken for "nothing to do".
 
 The private signing key lives only in the worker's settings and in
 `vapid-private-key.txt`, which is gitignored. The public key is in `app.js`

@@ -83,9 +83,10 @@ self.addEventListener('push', (event) => {
     body: data.body,
     icon: './icons/icon-192.png',
     badge: './icons/icon-192.png',
-    /* One tag means a newer alert replaces the older one rather than
-       stacking up a pile of notifications you have to clear. */
-    tag: 'lineup',
+    /* Alerts of the same kind replace each other rather than stacking up.
+       The draft countdown uses its own tag, so the 30-minute warning
+       supersedes the 60-minute one without touching a lineup alert. */
+    tag: data.tag || 'lineup',
     renotify: true,
   }));
 });

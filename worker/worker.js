@@ -27,13 +27,31 @@ const OUT_CODES = ['OUT', 'IR', 'PUP', 'SUS', 'DNR', 'NA', 'COV'];
 const NON_STARTING = ['BN', 'IR', 'TAXI'];
 
 /* When to actually look, in the user's local time. Hour is 0-23,
-   day is 0 = Sunday. The worker wakes hourly and checks this list, rather
-   than using a fixed UTC schedule, so it does not drift an hour when the
-   clocks change in November. */
+   day is 0 = Sunday. The worker wakes every five minutes and checks this
+   list, rather than using a fixed UTC schedule, so it does not drift an
+   hour when the clocks change in November. */
 const CHECK_TIMES = [
   { day: 0, hour: 10 },   /* Sunday morning - the important one */
   { day: 3, hour: 8 },    /* Wednesday, after waivers have run */
   { day: 4, hour: 16 },   /* Thursday afternoon, before Thursday night */
+];
+
+/*
+  Draft countdown. Each fires once.
+
+  `at` is minutes before the draft; `upto` is the newest it may fire. The
+  bands never overlap, so arriving late (say the job first sees the draft
+  35 minutes out) sends the 30 minute warning, not all three at once.
+*/
+const DRAFT_ALERTS = [
+  { at: 60, upto: 65, title: 'Your draft starts in an hour',
+    body: 'Be somewhere you can pick. If you miss it, Sleeper drafts your '
+        + 'whole team for you, and it drafts badly.' },
+  { at: 30, upto: 35, title: 'Draft in 30 minutes',
+    body: 'Get to your phone or computer. Open this app and tap Draft mode '
+        + 'when picking starts.' },
+  { at: 10, upto: 15, title: 'Draft in 10 minutes',
+    body: 'Open draft mode now. It will tell you one player to take at a time.' },
 ];
 
 const TIMEZONE = 'America/Chicago';
@@ -252,6 +270,45 @@ async function findProblems(cfg) {
   return { week, problems };
 }
 
+/*
+  The draft is the single worst thing to miss, so it gets its own countdown
+  independent of the weekly lineup checks. Runs on every wake-up.
+*/
+async function maybeDraftAlert(cfg, env) {
+  const league = await getJSON(API + '/v1/league/' + cfg.leagueId);
+
+  /* Once the draft is done, forget the flags and never look again. */
+  if (league.status !== 'pre_draft' || !league.draft_id) {
+    await env.STORE.delete('draftSent');
+    return false;
+  }
+
+  const draft = await getJSON(API + '/v1/draft/' + league.draft_id);
+  if (!draft || !draft.start_time) return false;
+
+  const minutesAway = (draft.start_time - Date.now()) / 60000;
+  if (minutesAway <= 0) return false;
+
+  const band = DRAFT_ALERTS.find((a) => minutesAway > (a.at - 5) && minutesAway <= a.upto);
+  if (!band) return false;
+
+  const sent = JSON.parse(await env.STORE.get('draftSent') || '[]');
+  if (sent.indexOf(band.at) !== -1) return false;
+
+  const res = await sendPush(cfg.subscription,
+    { title: band.title, body: band.body, tag: 'draft' }, env);
+
+  if (res.status === 404 || res.status === 410) {
+    await env.STORE.delete('sub');
+    return true;
+  }
+  if (res.ok) {
+    sent.push(band.at);
+    await env.STORE.put('draftSent', JSON.stringify(sent));
+  }
+  return true;
+}
+
 function buildMessage(week, problems) {
   const first = problems[0];
   let lead;
@@ -329,13 +386,23 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
-      /* Record the heartbeat first, so a later failure still shows the job
-         itself is alive and reaching this point. */
-      await env.STORE.put('lastRun', new Date().toISOString());
+      const now = new Date();
+
+      /* Heartbeat, so the app can tell a dead job from a quiet week. Written
+         only at the top of the hour: the free plan allows 1,000 KV writes a
+         day and this runs every five minutes. Hourly is plenty, since the
+         app treats anything over three hours old as broken. */
+      if (now.getUTCMinutes() < 5) {
+        await env.STORE.put('lastRun', now.toISOString());
+      }
 
       const raw = await env.STORE.get('sub');
       if (!raw) return;
       const cfg = JSON.parse(raw);
+
+      /* The draft countdown is checked on every wake-up, not just at the
+         weekly times, because it needs minute-level accuracy. */
+      if (await maybeDraftAlert(cfg, env)) return;
 
       /* Is this one of the hours worth checking, in the user's local time? */
       const parts = new Intl.DateTimeFormat('en-US', {
