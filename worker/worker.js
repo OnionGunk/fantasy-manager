@@ -381,6 +381,32 @@ export default {
       return json({ lastRun: lastRun || null, subscribed: !!sub });
     }
 
+    /*
+      Send a test notification on demand, so the whole chain - signing,
+      encryption, Apple, the phone - can be proven without waiting for
+      something to actually go wrong.
+
+      Behind a key that lives only in the worker's settings and never in
+      this repo, because the worker's address is public.
+    */
+    if (url.pathname === '/test') {
+      if (!env.TEST_KEY || url.searchParams.get('key') !== env.TEST_KEY) {
+        return json({ error: 'bad or missing key' }, 403);
+      }
+      const raw = await env.STORE.get('sub');
+      if (!raw) return json({ error: 'no phone is subscribed' }, 404);
+
+      const cfg = JSON.parse(raw);
+      const res = await sendPush(cfg.subscription, {
+        title: 'Test alert',
+        body: 'If you can read this, alerts work. Real ones only arrive when '
+            + 'something actually needs fixing.',
+        tag: 'test',
+      }, env);
+
+      return json({ ok: res.ok, pushStatus: res.status });
+    }
+
     return json({ error: 'not found' }, 404);
   },
 

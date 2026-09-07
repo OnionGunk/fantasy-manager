@@ -37,3 +37,6 @@ node_modules/
 
 # Push notification private key. Never commit this.
 vapid-private-key.txt
+
+# Test-alert key. Never commit this.
+test-key.txt
