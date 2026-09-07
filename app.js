@@ -188,6 +188,17 @@ function opponentFor(schedule, week, team) {
   return null;
 }
 
+/* The date this team plays in the given week, or null if they are on a bye. */
+function gameDateFor(schedule, week, team) {
+  if (!schedule || !team) return null;
+  const games = schedule[week];
+  if (!games) return null;
+  for (const g of games) {
+    if (g[0] === team || g[1] === team) return g[2] || null;
+  }
+  return null;
+}
+
 /* ---- projected points, from Rotowire via Sleeper ---- */
 async function getProjections(season, week, statKey, maxAge) {
   const key = 'proj2.' + season + '.' + week + '.' + statKey;
@@ -227,14 +238,52 @@ async function getProjections(season, week, statKey, maxAge) {
 const WAIVER_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
   'Friday', 'Saturday', 'Sunday'];
 
-function waiverInfo(league) {
+function waiverInfo(league, roster) {
   const s = (league && league.settings) || {};
+  /* waiver_type 2 means blind bidding: you spend a season-long budget
+     rather than taking turns in a priority order. */
+  const budget = (s.waiver_type === 2) ? (s.waiver_budget || null) : null;
+  const used = (roster && roster.settings
+    && roster.settings.waiver_budget_used) || 0;
   return {
     day: WAIVER_DAYS[s.waiver_day_of_week] || null,
-    /* waiver_type 2 means blind bidding: you spend a season-long budget
-       rather than taking turns in a priority order. */
-    faab: (s.waiver_type === 2) ? (s.waiver_budget || null) : null,
+    dayIndex: (s.waiver_day_of_week == null) ? null : s.waiver_day_of_week,
+    faab: budget,
+    remaining: (budget == null) ? null : Math.max(0, budget - used),
   };
+}
+
+/*
+  The single most useful thing for someone who has never played: not what to
+  do, but WHEN to look. There are two moments each week that decide almost
+  everything, and missing them is how people lose without noticing.
+*/
+function whenToCheck(waivers) {
+  const today = new Date().getDay();          /* 0 = Sunday */
+  const day = waivers && waivers.day;
+  /* Sleeper counts from Monday; JavaScript counts from Sunday. */
+  const waiverJsDay = (waivers && waivers.dayIndex != null)
+    ? (waivers.dayIndex + 1) % 7 : null;
+
+  if (today === 0) {
+    return 'Games are today. Set your lineup before the first kickoff &mdash; once '
+      + 'a player\'s game starts you cannot move him.';
+  }
+  if (today === 6) {
+    return 'Games are tomorrow. Set your lineup tonight or first thing in the '
+      + 'morning.';
+  }
+  if (waiverJsDay != null && today === waiverJsDay) {
+    return 'Waivers ran this morning. Anyone still unowned is now first come, '
+      + 'first served, so you can add them straight away.';
+  }
+  if (waiverJsDay != null && ((waiverJsDay - today + 7) % 7) === 1) {
+    return 'Waivers run tomorrow morning. If you want anybody, put the claim '
+      + 'in tonight &mdash; after that you are competing with everyone else.';
+  }
+  return 'Two moments matter each week: '
+    + (day ? (day + ' morning, when waivers run') : 'waiver day')
+    + ', and Sunday before kickoff, when your lineup locks.';
 }
 
 /* Which projection number matches this league's scoring. */
@@ -300,7 +349,22 @@ function describe(playerId, players, projections, schedule, week) {
      worst one unnecessary bench. */
   const withFreshInjury = (proj && proj.i) ? { i: proj.i, s: pl.s } : pl;
 
+  const gameDate = gameDateFor(schedule, week, pl.t);
+  const today = todayStamp();
+
   return {
+    gameDate,
+    /* His game is today, so his lineup spot is about to lock, or just has. */
+    playsToday: !!gameDate && gameDate === today,
+    /*
+      His game already happened. Nothing about him can be changed now, so
+      advice mentioning him is dead advice.
+
+      This uses dates, not kickoff times, because the schedule feed only
+      gives us dates. A player whose game started three hours ago today is
+      still treated as changeable. Same-day locking is not detectable here.
+    */
+    gamePlayed: !!gameDate && gameDate < today,
     id: playerId,
     name: pl.n,
     pos: pl.p,
@@ -328,6 +392,8 @@ function bestBenchFor(slot, bench, used) {
   const options = bench.filter((p) =>
     p && !used.has(p.id)
     && !p.onIR
+    /* No use suggesting someone whose game is already over. */
+    && !p.gamePlayed
     && slotAccepts(slot, p.fantasyPositions)
     && !isDeadWeight(p)
     && p.health.level !== 'doubtful');
@@ -412,6 +478,7 @@ function buildTodoList(ctx) {
   for (const s of ctx.lineup) {
     const p = s.player;
     if (!p) continue;
+    if (p.gamePlayed) continue;
     if (!p.health.out && !p.onBye) continue;
 
     const fill = bestBenchFor(s.slot, ctx.bench, used);
@@ -448,7 +515,7 @@ function buildTodoList(ctx) {
   /* --- Rule 3: a starter is doubtful -------------------------------------- */
   for (const s of ctx.lineup) {
     const p = s.player;
-    if (!p || p.health.level !== 'doubtful' || p.onBye) continue;
+    if (!p || p.health.level !== 'doubtful' || p.onBye || p.gamePlayed) continue;
 
     const fill = bestBenchFor(s.slot, ctx.bench, used);
     if (fill) used.add(fill.id);
@@ -470,10 +537,33 @@ function buildTodoList(ctx) {
     });
   }
 
+  /* --- Rule 3b: a questionable starter, on the day he actually plays ------- */
+  for (const s of ctx.lineup) {
+    const p = s.player;
+    if (!p || p.health.level !== 'questionable') continue;
+    if (p.onBye || p.gamePlayed || !p.playsToday) continue;
+
+    const fill = bestBenchFor(s.slot, ctx.bench, used);
+    todos.push({
+      level: 'warn',
+      rank: 'Check before kickoff',
+      action: 'Check on ' + p.name + ' before his game starts',
+      why: p.name + ' is listed <span class="term" tabindex="0" '
+        + 'data-def="An official NFL injury designation meaning it is genuinely '
+        + 'unclear whether the player will play. Most are settled about 90 '
+        + 'minutes before kickoff.">QUESTIONABLE</span> and plays today. Open '
+        + 'the Sleeper app about 90 minutes before his game. If he has been '
+        + 'ruled out by then, '
+        + (fill ? ('start ' + fill.name + ' instead.')
+          : 'you will need to put someone else in.'),
+    });
+  }
+
   /* --- Rule 4: someone on the bench projects clearly higher ---------------- */
   for (const s of ctx.lineup) {
     const p = s.player;
     if (!p || p.health.out || p.onBye || p.points == null) continue;
+    if (p.gamePlayed) continue;
     if (p.health.level === 'doubtful') continue; /* already covered above */
 
     const fill = bestBenchFor(s.slot, ctx.bench, used);
@@ -498,6 +588,25 @@ function buildTodoList(ctx) {
   /* --- Rule 5: a free agent is better than your weakest player ------------ */
   if (ctx.pickup) {
     const { add, drop } = ctx.pickup;
+
+    /*
+      How much to bid. There is no exact right answer, but "bid what he is
+      worth to you" is useless advice to someone who has never done it. So:
+      a player good enough to start right away is worth a real chunk of the
+      remaining budget; bench depth is worth a token amount.
+    */
+    const starterPoints = ctx.lineup
+      .map((s) => s.player)
+      .filter((p) => p && p.points != null)
+      .map((p) => p.points);
+    const worstStarter = starterPoints.length ? Math.min.apply(null, starterPoints) : null;
+    const wouldStart = worstStarter != null && add.points != null
+      && add.points > worstStarter;
+    const remaining = ctx.waivers ? ctx.waivers.remaining : null;
+    const bid = (remaining && remaining > 0)
+      ? Math.max(1, Math.round(remaining * (wouldStart ? 0.3 : 0.08)))
+      : null;
+
     todos.push({
       level: 'info',
       rank: 'Pick up',
@@ -515,11 +624,43 @@ function buildTodoList(ctx) {
         + (ctx.waivers && ctx.waivers.day
           ? (' before they run on <b>' + ctx.waivers.day + ' morning</b>')
           : ' before your league\'s next waiver run')
-        + (ctx.waivers && ctx.waivers.faab
-          ? ('. You bid dollars out of a $' + ctx.waivers.faab
-            + ' season budget rather than taking turns, so bid what he is '
-            + 'worth to you and expect to lose some.')
+        + (bid
+          ? ('. Bid <b>$' + bid + '</b> of your remaining $' + remaining + '. '
+            + (wouldStart
+              ? 'He would start for you straight away, which is worth paying for.'
+              : 'He is bench depth, so keep it cheap.')
+            + ' Highest bid wins and you only pay if you win, so a losing bid '
+            + 'costs you nothing.')
           : '.'),
+    });
+  }
+
+  /* --- Rule 5b: dates that sneak up on you -------------------------------- */
+  const lset = ctx.league.settings || {};
+
+  if (lset.trade_deadline
+      && (ctx.week === lset.trade_deadline - 1 || ctx.week === lset.trade_deadline)) {
+    todos.push({
+      level: 'info',
+      rank: 'Deadline',
+      action: (ctx.week === lset.trade_deadline)
+        ? 'Trades close at the end of this week'
+        : 'Trades close at the end of next week',
+      why: 'After week ' + lset.trade_deadline + ' nobody in your league can '
+        + 'trade for the rest of the season. If someone has offered you '
+        + 'something reasonable, this is the last chance to take it.',
+    });
+  }
+
+  if (lset.playoff_week_start && ctx.week === lset.playoff_week_start - 1) {
+    todos.push({
+      level: 'info',
+      rank: 'Playoffs',
+      action: 'The playoffs start next week',
+      why: 'From week ' + lset.playoff_week_start + ', the top '
+        + (lset.playoff_teams || 6) + ' teams play knockout games. One loss '
+        + 'ends your season, so it is worth being careful with your lineup '
+        + 'from here rather than coasting.',
     });
   }
 
@@ -697,7 +838,7 @@ async function loadEverything(cfg) {
   return {
     season, week, league, lineup, bench, matchup, draftTime, draftStatus,
     gameDay,
-    waivers: waiverInfo(league),
+    waivers: waiverInfo(league, mine),
     userId: user.user_id,
     hasProjections: !!projections,
     hasSchedule: !!schedule,
@@ -824,6 +965,14 @@ function renderHeader(data) {
     ? (data.season + ' season &middot; not drafted yet')
     : ('Week ' + data.week + ' &middot; ' + data.season + ' season');
   el('week-label').innerHTML = label;
+}
+
+function renderWhenToCheck(data) {
+  const box = el('when-to-check');
+  /* Before the draft there is no lineup and no waiver wire, so this is noise. */
+  if (data.league.status === 'pre_draft') { box.hidden = true; return; }
+  box.innerHTML = '<b>When to check:</b> ' + whenToCheck(data.waivers);
+  box.hidden = false;
 }
 
 function renderNote(data) {
@@ -960,7 +1109,7 @@ function renderDraftButton(data) {
   const live = data.draftStatus === 'drafting';
   const soon = data.draftStatus === 'pre_draft';
   btn.hidden = !(live || soon);
-  btn.textContent = live ? 'Draft is live — open draft mode'
+  btn.textContent = live ? 'Draft is live - open draft mode'
     : 'Open draft mode';
   btn.classList.toggle('live', live);
 }
@@ -976,6 +1125,7 @@ async function run(cfg) {
     renderDraftButton(data);
     renderHeader(data);
     renderTodos(buildTodoList(data));
+    renderWhenToCheck(data);
     renderNote(data);
     renderMatchup(data);
     renderRoster(data);

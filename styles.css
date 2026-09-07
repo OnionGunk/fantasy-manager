@@ -178,6 +178,18 @@ main, .setup, .fatal, .draft {
 }
 .todo.p-good .todo-action { font-size: 1.3rem; color: var(--good); }
 
+.when-check {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--text-faint);
+  border-radius: 9px;
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.when-check b { color: var(--text); }
+
 .todo-note {
   margin: 12px 2px 0;
   font-size: 0.82rem;
@@ -333,6 +345,10 @@ main, .setup, .fatal, .draft {
 }
 .hint { font-size: 0.83rem; color: var(--text-dim); margin: 3px 0 7px; }
 .hint code {
+  /* inline-block + max-width stops this long unbreakable-looking URL from
+     forcing the card wider than a narrow phone screen */
+  display: inline-block;
+  max-width: 100%;
   font-size: 0.8rem;
   background: var(--surface-2);
   padding: 2px 5px;
