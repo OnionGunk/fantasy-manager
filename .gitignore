@@ -26,6 +26,10 @@ temp/
 NOTES.local.md
 scratch/
 
+# Claude Code: shared project settings ARE committed (.claude/settings.json),
+# but personal overrides stay on this machine only.
+.claude/settings.local.json
+
 # If Node is ever added later, don't commit these
 node_modules/
 .env

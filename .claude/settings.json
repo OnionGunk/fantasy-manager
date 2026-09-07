@@ -1,0 +1,62 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+
+      "PowerShell(git status*)",
+      "PowerShell(git log*)",
+      "PowerShell(git diff*)",
+      "PowerShell(git show*)",
+      "PowerShell(git branch*)",
+      "PowerShell(git fsck*)",
+      "PowerShell(git ls-files*)",
+      "PowerShell(git config user.name*)",
+      "PowerShell(git config user.email*)",
+      "PowerShell(git remote -v*)",
+      "PowerShell(git add*)",
+      "PowerShell(git commit*)",
+      "PowerShell(git -C C:\\Projects\\FantasyManager *)",
+
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(git -C /c/Projects/FantasyManager *)",
+
+      "PowerShell(Get-ChildItem*)",
+      "PowerShell(Test-Path*)",
+      "PowerShell(Get-Content*)",
+      "PowerShell(Get-Command*)",
+
+      "PowerShell(curl.exe -s https://api.sleeper.app/*)",
+      "PowerShell(curl.exe -s -D - -o NUL https://api.sleeper.app/*)",
+      "Bash(curl -s https://api.sleeper.app/*)",
+
+      "WebFetch(domain:docs.sleeper.com)",
+      "WebSearch"
+    ],
+
+    "ask": [
+      "PowerShell(git push*)",
+      "PowerShell(git remote add*)",
+      "PowerShell(git remote set-url*)",
+      "PowerShell(git reset*)",
+      "PowerShell(git clean*)",
+      "PowerShell(git checkout*)",
+      "PowerShell(git rebase*)",
+      "PowerShell(git -C C:\\Projects\\FantasyManager push*)",
+      "PowerShell(git -C C:\\Projects\\FantasyManager reset*)",
+      "PowerShell(git -C C:\\Projects\\FantasyManager clean*)",
+      "PowerShell(Remove-Item*)",
+      "Bash(git push*)",
+      "Bash(rm *)"
+    ],
+
+    "deny": [
+      "PowerShell(git push --force*)",
+      "PowerShell(git push -f*)",
+      "Bash(git push --force*)",
+      "Bash(rm -rf /*)"
+    ]
+  }
+}
