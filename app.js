@@ -1155,8 +1155,8 @@ async function copyExport() {
    mistake for good news.
    =========================================================================== */
 
-/* Filled in once the worker exists. Empty means the feature stays hidden. */
-const PUSH_WORKER = '';
+/* The scheduled job that does the watching. Empty would hide the feature. */
+const PUSH_WORKER = 'https://fantasy-alerts.trmarkusen19.workers.dev';
 
 const VAPID_PUBLIC =
   'BDmUGfikNH9V_GlD64s9HIpBCngHSZ5Of6cu-sByb_Sg1EqCaARGJVspHDSwJ3tTQ2h65Kt6qyRlpsY8rzgaQos';
