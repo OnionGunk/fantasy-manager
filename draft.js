@@ -129,16 +129,37 @@ function replacementPoints(pool, rosterPositions, teams) {
    Building the candidate pool
    --------------------------------------------------------------------------- */
 
+/*
+  Which position should we rank this player at?
+
+  Some players carry a listed position we have no replacement level for -
+  Travis Hunter is listed DB but is drafted as a wide receiver. Ranking him
+  at DB would subtract a replacement value of zero and make his value look
+  enormous, floating him into the top ten. So fall back to the first of his
+  fantasy-eligible positions that we actually rank.
+*/
+const RANKED_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K'];
+
+function rankablePosition(pl) {
+  if (RANKED_POSITIONS.indexOf(pl.p) !== -1) return pl.p;
+  for (const p of (pl.f || [])) {
+    if (RANKED_POSITIONS.indexOf(p) !== -1) return p;
+  }
+  return null;
+}
+
 function buildPool(players, seasonProj) {
   const pool = [];
   for (const id in seasonProj) {
     const pl = players[id];
     if (!pl) continue;
+    const pos = rankablePosition(pl);
+    if (!pos) continue;
     const sp = seasonProj[id];
     pool.push({
       id,
       name: pl.n,
-      pos: pl.p,
+      pos,
       team: pl.t,
       pts: sp.pts,
       adp: sp.adp,
@@ -415,7 +436,8 @@ async function refreshDraft() {
         name: pl ? pl.n : (pick.metadata
           ? ((pick.metadata.first_name || '') + ' ' + (pick.metadata.last_name || '')).trim()
           : 'Unknown'),
-        pos: pl ? pl.p : (pick.metadata ? pick.metadata.position : '?'),
+        pos: pl ? (rankablePosition(pl) || pl.p)
+          : (pick.metadata ? pick.metadata.position : '?'),
         team: pl ? pl.t : (pick.metadata ? pick.metadata.team : null),
         round: pick.round,
       });
