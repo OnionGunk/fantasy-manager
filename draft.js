@@ -29,6 +29,10 @@ const MAX_AT_POSITION = { QB: 2, RB: 6, WR: 6, TE: 2, K: 1, DEF: 1 };
    Used to work out where "replacement level" sits for each position. */
 const FLEX_SHARE = { RB: 0.5, WR: 0.4, TE: 0.1 };
 
+/* Season points knocked off a player who would only ever be bench depth,
+   because every starting slot he fits is already covered. */
+const BENCH_PENALTY = 25;
+
 const draftState = {
   timer: null,
   statusTimer: null,
@@ -248,7 +252,39 @@ function recommend(ctx) {
   for (const p of candidates) {
     p.vor = Math.round((p.pts - (replacement[p.pos] || 0)) * 10) / 10;
   }
-  candidates.sort((a, b) => b.vor - a.vor);
+
+  /*
+    Value over replacement alone is not enough, and a full mock draft proved
+    it: taking the highest-VOR player every round produced six receivers and
+    three running backs, with the last two running backs 45 points BELOW
+    replacement level. Receivers kept looking better round by round, and by
+    the time running back became urgent, every good one was gone.
+
+    The missing idea is opportunity cost. What matters is not how good a
+    player is, but how much better he is than whoever would still be there at
+    your NEXT pick. A receiver you can get again in two rounds is worth less
+    than a running back who will not be.
+  */
+  const bestLater = {};
+  for (const p of candidates) {
+    if (bestLater[p.pos] === undefined) {
+      let top = 0;
+      for (const q of candidates) {
+        if (q.pos !== p.pos) continue;
+        /* Anyone normally drafted before our next pick is probably gone. */
+        if (pickAfterNextNo != null && q.adp != null && q.adp < pickAfterNextNo) continue;
+        if (q.vor > top) top = q.vor;
+      }
+      bestLater[p.pos] = top;
+    }
+    p.urgency = Math.round((p.vor - bestLater[p.pos]) * 10) / 10;
+
+    /* A second quarterback never starts in a one-quarterback league. Depth
+       at a position already covered is worth far less than it looks. */
+    p.score = needed.has(p.pos) ? p.urgency : (p.urgency - BENCH_PENALTY);
+  }
+
+  candidates.sort((a, b) => (b.score - a.score) || (b.vor - a.vor));
 
   const best = candidates[0];
 
@@ -269,6 +305,10 @@ function recommend(ctx) {
       + ' left and still need to fill ' + unfilled.length + ' starting spot'
       + (unfilled.length === 1 ? '' : 's') + '. He is the best '
       + describePosition(best.pos) + ' available.';
+  } else if (best.urgency >= 25) {
+    reason = 'Take him now. ' + describePosition(best.pos) + 's are thinning '
+      + 'out, and the best one likely still on the board at your next pick is '
+      + 'about ' + Math.round(best.urgency) + ' points worse over the season.';
   } else if (gapToNextSamePos != null && gapToNextSamePos >= 15) {
     reason = 'He is projected for ' + Math.round(gapToNextSamePos)
       + ' more points than the next '

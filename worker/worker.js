@@ -414,13 +414,14 @@ export default {
     ctx.waitUntil((async () => {
       const now = new Date();
 
-      /* Heartbeat, so the app can tell a dead job from a quiet week. Written
-         only at the top of the hour: the free plan allows 1,000 KV writes a
-         day and this runs every five minutes. Hourly is plenty, since the
-         app treats anything over three hours old as broken. */
-      if (now.getUTCMinutes() < 5) {
-        await env.STORE.put('lastRun', now.toISOString());
-      }
+      /* Heartbeat, so the app can tell a dead job from a quiet week.
+
+         Written on every run. That is 288 KV writes a day against a free
+         limit of 1,000, which is comfortable - and writing it only hourly
+         meant the app showed a red "not running" warning for up to an hour
+         after setup, which is exactly the false alarm this is meant to
+         prevent. */
+      await env.STORE.put('lastRun', now.toISOString());
 
       const raw = await env.STORE.get('sub');
       if (!raw) return;
