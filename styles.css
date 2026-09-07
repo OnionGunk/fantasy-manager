@@ -637,6 +637,29 @@ main, .setup, .fatal, .draft {
 .verdict-player { font-size: 0.92rem; overflow-wrap: anywhere; }
 
 /* ===========================================================
+   Push notification status
+   =========================================================== */
+
+.push-status {
+  margin: 0 0 14px;
+  padding: 13px 15px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-dim);
+}
+.push-status b { color: var(--text); }
+
+.push-good { background: var(--good-bg); border-color: var(--good); }
+.push-warn { background: var(--warn-bg); border-color: var(--warn); }
+.push-bad  { background: var(--urgent-bg); border-color: var(--urgent); }
+.push-bad b { color: var(--urgent); }
+
+#btn-push { margin-top: 0; }
+
+/* ===========================================================
    Export for Claude
    =========================================================== */
 

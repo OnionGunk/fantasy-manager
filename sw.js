@@ -67,3 +67,36 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(req).then((hit) => hit || caches.match('./index.html')))
   );
 });
+
+/* ===========================================================================
+   Push notifications
+
+   The server only ever sends when something is actually wrong, so anything
+   arriving here is worth showing.
+   =========================================================================== */
+
+self.addEventListener('push', (event) => {
+  let data = { title: 'Fantasy Manager', body: 'Open the app to see what changed.' };
+  try { if (event.data) data = event.data.json(); } catch (e) {}
+
+  event.waitUntil(self.registration.showNotification(data.title, {
+    body: data.body,
+    icon: './icons/icon-192.png',
+    badge: './icons/icon-192.png',
+    /* One tag means a newer alert replaces the older one rather than
+       stacking up a pile of notifications you have to clear. */
+    tag: 'lineup',
+    renotify: true,
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then((windows) => {
+        for (const w of windows) if ('focus' in w) return w.focus();
+        if (self.clients.openWindow) return self.clients.openWindow('./');
+      })
+  );
+});

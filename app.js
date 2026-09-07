@@ -1144,6 +1144,181 @@ async function copyExport() {
 }
 
 /* ===========================================================================
+   Push notifications
+
+   The page cannot notify you on its own - nothing of ours runs when you are
+   not looking at it. A small scheduled job elsewhere does the watching and
+   pushes only when a starter is OUT, on a bye, or a slot is empty.
+
+   The job writes a heartbeat every hour. This page reads it, so a job that
+   has quietly died shows up as a warning here rather than as silence you
+   mistake for good news.
+   =========================================================================== */
+
+/* Filled in once the worker exists. Empty means the feature stays hidden. */
+const PUSH_WORKER = '';
+
+const VAPID_PUBLIC =
+  'BDmUGfikNH9V_GlD64s9HIpBCngHSZ5Of6cu-sByb_Sg1EqCaARGJVspHDSwJ3tTQ2h65Kt6qyRlpsY8rzgaQos';
+
+/* A heartbeat older than this means something is broken. The job runs hourly. */
+const HEARTBEAT_STALE_MS = 3 * HOUR;
+
+function urlB64ToU8(s) {
+  const padded = (s + '='.repeat((4 - s.length % 4) % 4))
+    .replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(padded);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window
+    && 'Notification' in window;
+}
+
+/* On iOS the Push API only exists once the app is on the home screen. */
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+}
+
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent);
+}
+
+function setPushStatus(html, level) {
+  const box = el('push-status');
+  box.innerHTML = html;
+  box.className = 'push-status push-' + (level || 'info');
+  box.hidden = false;
+}
+
+async function renderNotifications(data) {
+  const block = el('push-block');
+  if (!PUSH_WORKER) { block.hidden = true; return; }
+  block.hidden = false;
+
+  const btn = el('btn-push');
+  btn.hidden = true;
+
+  if (isIOS() && !isStandalone()) {
+    setPushStatus('To get alerts, add this page to your home screen first: tap '
+      + 'the <b>Share</b> button, then <b>Add to Home Screen</b>, and open it '
+      + 'from there. Apple only allows notifications for installed apps.', 'info');
+    return;
+  }
+
+  if (!pushSupported()) {
+    setPushStatus('This browser cannot do notifications. Open the app from '
+      + 'your home screen instead.', 'info');
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    setPushStatus('Notifications are blocked. To turn them back on, open '
+      + '<b>Settings &rarr; Notifications &rarr; Fantasy</b> on your phone and '
+      + 'allow them.', 'warn');
+    return;
+  }
+
+  let sub = null;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    sub = await reg.pushManager.getSubscription();
+  } catch (e) { sub = null; }
+
+  if (!sub) {
+    setPushStatus('Your phone will stay quiet unless a starter is ruled out, '
+      + 'is on a bye, or a slot is empty. Nothing else will buzz you.', 'info');
+    btn.hidden = false;
+    btn.textContent = 'Turn on notifications';
+    return;
+  }
+
+  /* Subscribed here - now check the job on the other end is actually alive. */
+  let health = null;
+  try {
+    const res = await fetch(PUSH_WORKER + '/health', { cache: 'no-store' });
+    health = await res.json();
+  } catch (e) { health = null; }
+
+  if (!health) {
+    setPushStatus('Could not reach the alert service, so alerts may not be '
+      + 'working. Check again later &mdash; do not rely on it this week.', 'warn');
+    return;
+  }
+
+  if (!health.subscribed) {
+    setPushStatus('This phone is no longer registered for alerts, which happens '
+      + 'occasionally. Tap below to fix it.', 'warn');
+    btn.hidden = false;
+    btn.textContent = 'Turn notifications back on';
+    return;
+  }
+
+  const age = health.lastRun ? (Date.now() - new Date(health.lastRun).getTime()) : null;
+  if (age == null || age > HEARTBEAT_STALE_MS) {
+    setPushStatus('<b>Alerts are not running.</b> The service last checked '
+      + (health.lastRun ? ('on ' + new Date(health.lastRun).toLocaleString())
+        : 'never')
+      + '. Do not count on being warned &mdash; check your lineup yourself '
+      + 'this week.', 'bad');
+    return;
+  }
+
+  const mins = Math.round(age / MIN);
+  setPushStatus('Alerts are on and working. Last checked '
+    + (mins < 2 ? 'just now' : (mins + ' minutes ago'))
+    + '. You will only hear from it when something needs fixing.', 'good');
+}
+
+async function enablePush() {
+  const btn = el('btn-push');
+  btn.disabled = true;
+  btn.textContent = 'Setting up…';
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      setPushStatus('You said no to notifications. Tap the button again if you '
+        + 'change your mind.', 'warn');
+      return;
+    }
+
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToU8(VAPID_PUBLIC),
+      });
+    }
+
+    const res = await fetch(PUSH_WORKER + '/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subscription: sub.toJSON(),
+        userId: lastData.userId,
+        leagueId: loadConfig().leagueId,
+      }),
+    });
+    if (!res.ok) throw new Error('the alert service refused it (' + res.status + ')');
+
+    await renderNotifications(lastData);
+  } catch (err) {
+    console.error(err);
+    setPushStatus('Could not turn notifications on: ' + (err.message || err)
+      + '. Nothing is broken &mdash; the rest of the app works as normal.', 'bad');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Turn on notifications';
+  }
+}
+
+/* ===========================================================================
    Jargon tooltips
    =========================================================================== */
 
@@ -1292,6 +1467,9 @@ async function run(cfg) {
     el('export-text').value = buildExport(data, todos);
     el('export-block').hidden = (data.league.status === 'pre_draft');
     el('export-status').hidden = true;
+
+    /* Runs on its own; never blocks the page if the service is unreachable. */
+    renderNotifications(data);
     renderMatchup(data);
     renderRoster(data);
 
@@ -1354,6 +1532,7 @@ function wireControls() {
   });
 
   el('btn-export').addEventListener('click', copyExport);
+  el('btn-push').addEventListener('click', enablePush);
 
   el('btn-trade').addEventListener('click', () => {
     if (lastData) enterTradeMode(lastData);

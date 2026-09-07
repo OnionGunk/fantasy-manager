@@ -34,3 +34,6 @@ scratch/
 node_modules/
 .env
 .env.local
+
+# Push notification private key. Never commit this.
+vapid-private-key.txt

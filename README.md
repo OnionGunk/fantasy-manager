@@ -128,6 +128,39 @@ other.
 
 Costs nothing unless you actually use it, which keeps the app itself free.
 
+## Alerts (worker/worker.js)
+
+The page cannot notify you on its own - nothing of ours runs when you are not
+looking at it. `worker/worker.js` is a scheduled job (Cloudflare Workers free
+plan) that does the watching.
+
+It notifies about exactly three things, because they are the only ones that
+guarantee a zero:
+
+- a starter ruled OUT or moved to injured reserve
+- a starter on a bye week
+- an empty starting slot
+
+Nothing else ever buzzes. A notification you can safely ignore becomes one you
+always ignore.
+
+**Staying inside 10ms of CPU.** The Workers free plan allows 10 milliseconds of
+CPU per run, so the job never touches the 15 MB player file or the 2 MB
+projections feed. It fetches `GET /v1/players/nfl/<id>` once per starter
+instead - about 18 requests and 57 KB of parsing per run.
+
+**Clock changes.** It wakes hourly and decides for itself whether the local
+time is worth checking, rather than using a fixed UTC schedule that would
+drift an hour when the clocks change mid-season.
+
+**Silent failure.** A background job that dies quietly is worse than no job.
+It writes a heartbeat every run; the page reads it and warns you on screen if
+it has gone stale, so silence is never mistaken for "nothing to do".
+
+The private signing key lives only in the worker's settings and in
+`vapid-private-key.txt`, which is gitignored. The public key is in `app.js`
+and is meant to be public.
+
 ## Endpoints used
 
 Documented and stable:
