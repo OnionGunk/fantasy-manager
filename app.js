@@ -324,7 +324,12 @@ function buildTodoList(ctx) {
     return todos;
   }
 
-  if (!ctx.lineup.length && !ctx.bench.length) {
+  /* lineup always has one entry per starting slot, filled or not, so counting
+     it tells us nothing. Look for an actual player. */
+  const hasAnyPlayer = ctx.bench.length
+    || ctx.lineup.some((s) => s.player || s.unknown);
+
+  if (!hasAnyPlayer) {
     todos.push({
       level: 'info',
       rank: 'Nothing yet',
@@ -686,7 +691,11 @@ function playerRow(slot, p, unknown) {
 }
 
 function renderRoster(data) {
-  if (!data.lineup.length && !data.bench.length) return;
+  /* Before the draft every slot is empty. Showing nine "Empty" rows would be
+     noise, so the whole section stays hidden until there are real players. */
+  const hasAnyPlayer = data.bench.length
+    || data.lineup.some((s) => s.player || s.unknown);
+  if (!hasAnyPlayer) return;
 
   const starters = el('starters');
   const bench = el('bench');
