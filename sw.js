@@ -10,13 +10,14 @@
    app.js does its own caching in localStorage with proper expiry times.
    =========================================================================== */
 
-const CACHE = 'fantasy-manager-v1';
+const CACHE = 'fantasy-manager-v2';
 
 const SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './draft.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

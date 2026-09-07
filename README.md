@@ -60,6 +60,36 @@ data Sleeper already publishes. In priority order:
 Projected points come from Rotowire via Sleeper. Injury designations come from
 official NFL injury reports via Sleeper. This page just reads them and sorts.
 
+## Draft mode
+
+Opens automatically when the draft goes live, or from the button on the main
+screen. It polls for new picks every 5 seconds and answers one question: who
+do I take right now?
+
+Ranking is **value over replacement (VOR)**, not average draft position.
+A player is worth what he scores above the worst player you could otherwise
+start at his position. That is why a 300-point quarterback can be a worse
+pick than a 250-point running back: every team gets a good quarterback, and
+running backs run out.
+
+    VOR = projected season points - points of the last startable player
+                                    at that position league-wide
+
+Replacement level is derived from this league's actual starting slots, not a
+generic assumption. For 12 teams starting 2 RB + 1 flex, roughly 30 running
+backs start each week, so RB #30 is replacement level.
+
+Guard rails on top of the ranking:
+
+- never recommends a third QB or a second kicker
+- never recommends a kicker until the final pick
+- switches from "best value" to "fill your holes" once picks remaining equals
+  starting slots still empty, so the draft cannot end without a kicker
+- flags when a player has fallen well past his usual draft position
+
+ADP (`adp_ppr`) is used for timing, not for ranking: it says whether a player
+will likely still be there at the next pick.
+
 ## Endpoints used
 
 Documented and stable:
@@ -72,12 +102,16 @@ Documented and stable:
 - `GET /v1/league/<league_id>/matchups/<week>` - this week's score
 - `GET /v1/players/nfl` - all players (~15 MB, cached once per day, trimmed)
 - `GET /v1/players/nfl/trending/add` - who everyone is picking up
-- `GET /v1/draft/<draft_id>` - draft date, before the season starts
+- `GET /v1/draft/<draft_id>` - draft date, status, order, slot mapping
+- `GET /v1/draft/<draft_id>/picks` - every pick made so far (polled in draft mode)
+- `GET /v1/league/<league_id>/drafts` - all drafts attached to the league
 
 Undocumented, used with a fallback if they stop working:
 
 - `GET /schedule/nfl/regular/<season>` - real NFL schedule, for opponents and byes
-- `GET /projections/nfl/<season>/<week>` - projected points
+- `GET /projections/nfl/<season>/<week>` - weekly projected points, plus a
+  fresher injury designation than the big player file carries
+- `GET /projections/nfl/<season>` - season totals and ADP, for draft mode
 
 All of them send `access-control-allow-origin: *`, so the browser is allowed to
 call them directly. Verified 2026-09-07.
@@ -87,6 +121,27 @@ call them directly. Verified 2026-09-07.
 The player file is ~15 MB, which does not fit in localStorage (~5 MB limit).
 It gets trimmed to just the fields this page needs before being stored, which
 brings it under 1 MB. Refreshed once per day.
+
+Refresh rates are deliberately uneven, because the data moves at different
+speeds:
+
+| Data | Normal day | Game day | Why |
+| --- | --- | --- | --- |
+| Player file (15 MB) | 24 h | 24 h | Too big to pull often |
+| Weekly projections (2 MB) | 6 h | **15 min** | Carries live injury status |
+| NFL schedule | 24 h | 24 h | Fixed months ahead |
+| Season projections / ADP | 24 h | 24 h | Draft only |
+| Draft picks | - | **5 s** | Only while a draft is live |
+
+"Game day" means the NFL schedule says somebody plays today. Injury
+designations move fast in the hours before kickoff - a player can go from
+questionable to out ninety minutes before the game - so on those days the
+projections feed is re-read every 15 minutes and its injury designation
+overrides the older one in the cached player file.
+
+The override only ever applies a designation, never clears one. Wrongly
+benching a healthy player costs a few points; wrongly starting a player who
+was ruled out costs the whole slot.
 
 ## Limits
 

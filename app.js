@@ -135,7 +135,7 @@ async function getPlayers() {
 
 /* ---- real NFL schedule: gives us opponents and bye weeks ---- */
 async function getSchedule(season) {
-  const key = 'sched.' + season;
+  const key = 'sched2.' + season;
   const hit = cacheGet(key, DAY);
   if (hit) return hit;
 
@@ -145,10 +145,30 @@ async function getSchedule(season) {
   const byWeek = {};
   for (const g of raw) {
     if (!g || !g.week) continue;
-    (byWeek[g.week] = byWeek[g.week] || []).push([g.home, g.away]);
+    (byWeek[g.week] = byWeek[g.week] || []).push([g.home, g.away, g.date]);
   }
   cacheSet(key, byWeek);
   return byWeek;
+}
+
+/* Today's date as Sleeper writes it in the schedule, e.g. "2026-09-13". */
+function todayStamp() {
+  const d = new Date();
+  const pad = (n) => (n < 10 ? '0' + n : '' + n);
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+/*
+  Is anybody playing today? Injury designations move constantly in the hours
+  before kickoff - a player can go from questionable to out ninety minutes
+  before the game - so on a game day we refresh far more often than usual.
+*/
+function isGameDay(schedule, week) {
+  if (!schedule) return false;
+  const games = schedule[week];
+  if (!games) return false;
+  const today = todayStamp();
+  return games.some((g) => g[2] === today);
 }
 
 /*
@@ -169,9 +189,9 @@ function opponentFor(schedule, week, team) {
 }
 
 /* ---- projected points, from Rotowire via Sleeper ---- */
-async function getProjections(season, week, statKey) {
-  const key = 'proj.' + season + '.' + week + '.' + statKey;
-  const hit = cacheGet(key, 6 * HOUR);
+async function getProjections(season, week, statKey, maxAge) {
+  const key = 'proj2.' + season + '.' + week + '.' + statKey;
+  const hit = cacheGet(key, maxAge);
   if (hit) return hit;
 
   const positions = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF']
@@ -190,6 +210,9 @@ async function getProjections(season, week, statKey) {
     out[row.player_id] = {
       p: Math.round(pts * 10) / 10,
       o: row.opponent || null,
+      /* This feed carries a fresher injury designation than the big player
+         file does, and it is small enough to re-fetch on a game day. */
+      i: (row.player && row.player.injury_status) || null,
     };
   }
   cacheSet(key, out);
@@ -252,6 +275,13 @@ function describe(playerId, players, projections, schedule, week) {
   /* Fall back to the opponent the projections feed reports. */
   if (opp === undefined && proj && proj.o) opp = proj.o;
 
+  /* Prefer the projections feed's injury designation when it has one: it is
+     refreshed far more often than the big player file. We only override when
+     it reports an actual designation, never to clear one, so a player who is
+     newly ruled OUT is caught within minutes while a stale flag costs at
+     worst one unnecessary bench. */
+  const withFreshInjury = (proj && proj.i) ? { i: proj.i, s: pl.s } : pl;
+
   return {
     id: playerId,
     name: pl.n,
@@ -259,7 +289,7 @@ function describe(playerId, players, projections, schedule, week) {
     team: pl.t,
     fantasyPositions: pl.f,
     rank: pl.r,
-    health: health(pl),
+    health: health(withFreshInjury),
     onBye: opp === null,
     opponent: opp,
     /* null means "we genuinely don't have a number", which is different
@@ -547,18 +577,28 @@ async function loadEverything(cfg) {
 
   const statKey = statKeyFor(league);
 
-  const [players, schedule, projections, trending, matchups] = await Promise.all([
+  /* The schedule comes first because it tells us whether anyone plays today,
+     which decides how hard we refresh everything else. */
+  const schedule = await getSchedule(season);
+  const gameDay = isGameDay(schedule, week);
+  const projTtl = gameDay ? 15 * MIN : 6 * HOUR;
+
+  const [players, projections, trending, matchups] = await Promise.all([
     getPlayers(),
-    getSchedule(season),
-    getProjections(season, week, statKey),
+    getProjections(season, week, statKey, projTtl),
     tryJSON(API + '/v1/players/nfl/trending/add?lookback_hours=24&limit=25'),
     tryJSON(API + '/v1/league/' + cfg.leagueId + '/matchups/' + week),
   ]);
 
   let draftTime = null;
-  if (league.status === 'pre_draft' && league.draft_id) {
+  let draftStatus = null;
+  if (league.draft_id
+      && (league.status === 'pre_draft' || league.status === 'drafting')) {
     const draft = await tryJSON(API + '/v1/draft/' + league.draft_id);
-    if (draft && draft.start_time) draftTime = draft.start_time;
+    if (draft) {
+      draftStatus = draft.status;
+      if (draft.start_time) draftTime = draft.start_time;
+    }
   }
 
   /* ---- lineup and bench ---- */
@@ -618,7 +658,9 @@ async function loadEverything(cfg) {
   }
 
   return {
-    season, week, league, lineup, bench, matchup, draftTime,
+    season, week, league, lineup, bench, matchup, draftTime, draftStatus,
+    gameDay,
+    userId: user.user_id,
     hasProjections: !!projections,
     hasSchedule: !!schedule,
     pickup,
@@ -868,6 +910,21 @@ function friendlyError(err) {
    =========================================================================== */
 
 let refreshing = false;
+let lastData = null;
+/* Set when the user closes draft mode, so a live draft does not keep
+   dragging them back into it against their will. */
+let draftDismissed = false;
+
+/* The button only makes sense while there is a draft to open. */
+function renderDraftButton(data) {
+  const btn = el('btn-draft');
+  const live = data.draftStatus === 'drafting';
+  const soon = data.draftStatus === 'pre_draft';
+  btn.hidden = !(live || soon);
+  btn.textContent = live ? 'Draft is live — open draft mode'
+    : 'Open draft mode';
+  btn.classList.toggle('live', live);
+}
 
 async function run(cfg) {
   if (refreshing) return;
@@ -876,6 +933,8 @@ async function run(cfg) {
 
   try {
     const data = await loadEverything(cfg);
+    lastData = data;
+    renderDraftButton(data);
     renderHeader(data);
     renderTodos(buildTodoList(data));
     renderNote(data);
@@ -888,6 +947,12 @@ async function run(cfg) {
     el('setup').hidden = true;
     el('fatal').hidden = true;
     el('app').hidden = false;
+
+    /* A live draft is the only thing that matters while it is happening,
+       so go straight there unless the user has closed it already. */
+    if (data.draftStatus === 'drafting' && !draftDismissed) {
+      enterDraftMode(data, cfg);
+    }
   } catch (err) {
     console.error(err);
     showFatal(friendlyError(err));
@@ -927,6 +992,11 @@ function wireControls() {
   el('btn-refresh').addEventListener('click', () => {
     const cfg = loadConfig();
     if (cfg) run(cfg);
+  });
+
+  el('btn-draft').addEventListener('click', () => {
+    draftDismissed = false;
+    if (lastData) enterDraftMode(lastData, loadConfig());
   });
 
   el('btn-reset').addEventListener('click', () => showSetup(loadConfig()));

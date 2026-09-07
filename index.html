@@ -61,6 +61,10 @@
             aria-label="Refresh data">&#8635;</button>
   </header>
 
+  <button id="btn-draft" class="btn-draft" type="button" hidden>
+    Open draft mode
+  </button>
+
   <!-- ---- THE POINT OF THE WHOLE PAGE ---- -->
   <section class="block" aria-labelledby="todo-heading">
     <h2 id="todo-heading">What do I need to do today?</h2>
@@ -164,9 +168,13 @@
   </div>
 </section>
 
+<!-- ============ DRAFT MODE ============ -->
+<section id="draft" class="draft" hidden></section>
+
 <!-- tooltip bubble for jargon terms -->
 <div id="tip" class="tip" hidden></div>
 
+<script src="draft.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
