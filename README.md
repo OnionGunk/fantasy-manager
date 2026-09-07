@@ -90,6 +90,26 @@ Guard rails on top of the ranking:
 ADP (`adp_ppr`) is used for timing, not for ranking: it says whether a player
 will likely still be there at the next pick.
 
+## Trade checker
+
+Sleeper's API cannot show you a trade offer. It is unauthenticated and
+read-only, so it has no idea who you are and no way to reach your inbox.
+Only completed transactions are public. So the offer is typed in by hand.
+
+Pick up to three players each way, get one verdict. The value maths is the
+same VOR used in draft mode, plus one rule that matters more in-season than
+in a draft:
+
+**A trade that leaves you unable to field a legal lineup is declined even
+when the points favour it.** Trading your only tight end for a better running
+back looks like a gain right up until you start a zero at tight end every
+week. When that happens and the points do favour the trade, the verdict says
+so and tells you to pick up a replacement first.
+
+Otherwise the margin is ~10 projected points over a full season. Anything
+inside that is noise, and the verdict is to keep what you have rather than
+churn for no reason.
+
 ## Endpoints used
 
 Documented and stable:

@@ -65,6 +65,10 @@
     Open draft mode
   </button>
 
+  <button id="btn-trade" class="btn-draft" type="button" hidden>
+    Check a trade someone offered me
+  </button>
+
   <!-- ---- THE POINT OF THE WHOLE PAGE ---- -->
   <section class="block" aria-labelledby="todo-heading">
     <h2 id="todo-heading">What do I need to do today?</h2>
@@ -180,10 +184,14 @@
 <!-- ============ DRAFT MODE ============ -->
 <section id="draft" class="draft" hidden></section>
 
+<!-- ============ TRADE CHECKER ============ -->
+<section id="trade" class="draft" hidden></section>
+
 <!-- tooltip bubble for jargon terms -->
 <div id="tip" class="tip" hidden></div>
 
 <script src="draft.js"></script>
+<script src="trade.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

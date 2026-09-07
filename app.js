@@ -1112,6 +1112,9 @@ function renderDraftButton(data) {
   btn.textContent = live ? 'Draft is live - open draft mode'
     : 'Open draft mode';
   btn.classList.toggle('live', live);
+
+  /* Trades need rosters, which do not exist until the draft is done. */
+  el('btn-trade').hidden = (data.league.status === 'pre_draft');
 }
 
 async function run(cfg) {
@@ -1186,6 +1189,10 @@ function wireControls() {
   el('btn-draft').addEventListener('click', () => {
     draftDismissed = false;
     if (lastData) enterDraftMode(lastData, loadConfig());
+  });
+
+  el('btn-trade').addEventListener('click', () => {
+    if (lastData) enterTradeMode(lastData);
   });
 
   el('btn-reset').addEventListener('click', () => showSetup(loadConfig()));

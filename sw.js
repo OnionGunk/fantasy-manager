@@ -2,7 +2,7 @@
    Service worker.
 
    Its only job is to keep the page itself openable without a signal. It
-   caches the eight files that make up the app and nothing else.
+   caches the handful of files that make up the app and nothing else.
 
    It deliberately does NOT touch requests to the Sleeper API. Fantasy data
    goes stale in minutes, and a cached injury report is worse than no page
@@ -10,7 +10,7 @@
    app.js does its own caching in localStorage with proper expiry times.
    =========================================================================== */
 
-const CACHE = 'fantasy-manager-v2';
+const CACHE = 'fantasy-manager-v3';
 
 const SHELL = [
   './',
@@ -18,6 +18,7 @@ const SHELL = [
   './styles.css',
   './app.js',
   './draft.js',
+  './trade.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

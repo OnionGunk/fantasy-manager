@@ -558,3 +558,90 @@ main, .setup, .fatal, .draft {
   .pick-name { font-size: 2.8rem; }
   .clock-big { font-size: 5rem; }
 }
+
+/* ===========================================================
+   Trade checker
+   =========================================================== */
+
+.trade-rows { display: flex; flex-direction: column; gap: 8px; }
+
+.trade-select {
+  width: 100%;
+  padding: 13px 12px;
+  font-size: 16px;          /* 16px stops iOS zooming in on focus */
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.trade-select:focus { outline: 2px solid var(--info); outline-offset: 1px; }
+
+.trade-add { margin-top: 9px; display: inline-block; }
+
+#btn-check-trade { margin-top: 26px; }
+
+.verdict {
+  margin-top: 22px;
+  padding: 24px 20px;
+  border-radius: var(--radius);
+  border: 2px solid var(--line);
+  text-align: center;
+}
+.verdict-word {
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+.verdict-headline { font-size: 1.05rem; font-weight: 700; margin-top: 10px; }
+.verdict-why {
+  margin: 12px 0 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--text-dim);
+  text-align: left;
+}
+
+.verdict-good { background: var(--good-bg); border-color: var(--good); }
+.verdict-good .verdict-word { color: var(--good); }
+
+.verdict-bad { background: var(--urgent-bg); border-color: var(--urgent); }
+.verdict-bad .verdict-word { color: var(--urgent); }
+
+.verdict-close { background: var(--warn-bg); border-color: var(--warn); }
+.verdict-close .verdict-word { color: var(--warn); }
+
+.verdict-sides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+.verdict-side {
+  flex: 1 1 45%;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 12px 14px;
+}
+.verdict-side-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+.verdict-player { font-size: 0.92rem; overflow-wrap: anywhere; }
+
+.trade-warn {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  font-size: 0.88rem;
+  color: var(--text);
+}
