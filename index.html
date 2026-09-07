@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fantasy Manager</title>
+<meta name="description" content="What do I need to do with my fantasy team today?">
+
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0f1520">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fantasy">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192">
+
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ FIRST-RUN SETUP ============ -->
+<section id="setup" class="setup" hidden>
+  <div class="setup-card">
+    <h1>One-time setup</h1>
+    <p class="setup-intro">
+      Enter your Sleeper details once. This device will remember them.
+      Nothing is sent anywhere except to Sleeper.
+    </p>
+
+    <label for="in-username">Sleeper username</label>
+    <p class="hint">
+      Your login name, all lowercase, no spaces. Not your team name.
+    </p>
+    <input id="in-username" type="text" autocapitalize="none" autocorrect="off"
+           spellcheck="false" placeholder="scubahorse">
+
+    <label for="in-league">League ID</label>
+    <p class="hint">
+      Open your league on sleeper.com. The long number in the address bar is
+      your league ID.<br>
+      <code>sleeper.com/leagues/<b>1234567890123456789</b>/team</code>
+    </p>
+    <input id="in-league" type="text" inputmode="numeric" autocapitalize="none"
+           autocorrect="off" spellcheck="false" placeholder="1234567890123456789">
+
+    <p id="setup-error" class="setup-error" hidden></p>
+
+    <button id="btn-save" class="btn-primary" type="button">Save and continue</button>
+  </div>
+</section>
+
+<!-- ============ MAIN APP ============ -->
+<main id="app" hidden>
+
+  <header class="topbar">
+    <div>
+      <h1 id="league-name">Fantasy Manager</h1>
+      <p id="week-label" class="subtle"></p>
+    </div>
+    <button id="btn-refresh" class="btn-icon" type="button" title="Refresh"
+            aria-label="Refresh data">&#8635;</button>
+  </header>
+
+  <!-- ---- THE POINT OF THE WHOLE PAGE ---- -->
+  <section class="block" aria-labelledby="todo-heading">
+    <h2 id="todo-heading">What do I need to do today?</h2>
+    <div id="todo-list" class="todo-list">
+      <div class="loading">Checking your team&hellip;</div>
+    </div>
+    <p id="todo-note" class="todo-note" hidden></p>
+  </section>
+
+  <!-- ---- SCORE ---- -->
+  <section class="block" id="matchup-block" aria-labelledby="matchup-heading" hidden>
+    <h2 id="matchup-heading">This week's score</h2>
+    <div id="matchup" class="matchup"></div>
+  </section>
+
+  <!-- ---- ROSTER ---- -->
+  <section class="block" id="roster-block" aria-labelledby="roster-heading" hidden>
+    <h2 id="roster-heading">My team</h2>
+
+    <h3 class="group-heading">
+      Starting
+      <span class="term" tabindex="0" role="button"
+            data-def="These players earn you points this week. Everyone else is on the bench and earns nothing.">
+        starting
+      </span>
+    </h3>
+    <div id="starters" class="roster-group"></div>
+
+    <h3 class="group-heading">Bench</h3>
+    <div id="bench" class="roster-group"></div>
+  </section>
+
+  <!-- ---- GLOSSARY ---- -->
+  <section class="block" aria-labelledby="glossary-heading">
+    <h2 id="glossary-heading">What the words mean</h2>
+    <dl class="glossary">
+      <dt>Starting</dt>
+      <dd>These players earn you points this week. Bench players earn nothing,
+          no matter how well they play.</dd>
+
+      <dt>Bench</dt>
+      <dd>Players you own who are not playing for you this week. They are
+          insurance, and you can swap them into your lineup any time before
+          their game starts.</dd>
+
+      <dt>Flex</dt>
+      <dd>A lineup slot that accepts a running back, a wide receiver, or a
+          tight end. It exists so you can start whoever is playing best that
+          week, regardless of position.</dd>
+
+      <dt>Bye week</dt>
+      <dd>One week each season where a player's real NFL team does not play at
+          all. A player on a bye scores exactly zero. Starting one by accident
+          is the single most common way to lose a week.</dd>
+
+      <dt>Waivers</dt>
+      <dd>The queue for claiming players nobody owns. Instead of first-come
+          first-served, claims are collected and processed all at once on a set
+          day each week, so everyone gets a fair shot at a player.</dd>
+
+      <dt>Free agent</dt>
+      <dd>A player no team in your league owns. After the waiver period passes,
+          anyone can add them instantly.</dd>
+
+      <dt>OUT / Doubtful / Questionable</dt>
+      <dd>Official NFL injury labels. <b>OUT</b> means they will definitely not
+          play, so they score zero. <b>Doubtful</b> means they probably won't.
+          <b>Questionable</b> is a genuine coin flip, usually decided about 90
+          minutes before kickoff.</dd>
+
+      <dt>IR (injured reserve)</dt>
+      <dd>A player hurt badly enough to be out for several weeks at minimum.
+          Most leagues give you a separate slot to stash them in.</dd>
+
+      <dt>Projected points</dt>
+      <dd>How many points analysts expect a player to score this week. Useful
+          for comparing two players. Not a promise.</dd>
+    </dl>
+  </section>
+
+  <footer class="footer">
+    <p id="updated-at" class="subtle"></p>
+    <p>
+      <button id="btn-reset" class="linklike" type="button">Change settings</button>
+      <span class="sep">&middot;</span>
+      <button id="btn-clear-cache" class="linklike" type="button">Force full refresh</button>
+    </p>
+    <p class="subtle tiny">
+      Reads the public Sleeper API. Cannot change your lineup &mdash; make
+      changes in the Sleeper app.
+    </p>
+  </footer>
+</main>
+
+<!-- ============ FATAL ERROR ============ -->
+<section id="fatal" class="fatal" hidden>
+  <div class="setup-card">
+    <h1>Something went wrong</h1>
+    <p id="fatal-msg"></p>
+    <button id="btn-fatal-reset" class="btn-primary" type="button">Change settings</button>
+  </div>
+</section>
+
+<!-- tooltip bubble for jargon terms -->
+<div id="tip" class="tip" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
