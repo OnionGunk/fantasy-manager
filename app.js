@@ -219,6 +219,24 @@ async function getProjections(season, week, statKey, maxAge) {
   return out;
 }
 
+/*
+  Sleeper numbers waiver_day_of_week from Monday: 0 = Monday ... 6 = Sunday.
+  This is not documented anywhere. It was confirmed against this league, whose
+  API value of 2 lines up with the Wednesday shown in the Sleeper app.
+*/
+const WAIVER_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday',
+  'Friday', 'Saturday', 'Sunday'];
+
+function waiverInfo(league) {
+  const s = (league && league.settings) || {};
+  return {
+    day: WAIVER_DAYS[s.waiver_day_of_week] || null,
+    /* waiver_type 2 means blind bidding: you spend a season-long budget
+       rather than taking turns in a priority order. */
+    faab: (s.waiver_type === 2) ? (s.waiver_budget || null) : null,
+  };
+}
+
 /* Which projection number matches this league's scoring. */
 function statKeyFor(league) {
   const rec = league && league.scoring_settings
@@ -309,6 +327,7 @@ const pts = (p) => (p && p.points != null) ? p.points : -1;
 function bestBenchFor(slot, bench, used) {
   const options = bench.filter((p) =>
     p && !used.has(p.id)
+    && !p.onIR
     && slotAccepts(slot, p.fantasyPositions)
     && !isDeadWeight(p)
     && p.health.level !== 'doubtful');
@@ -492,7 +511,15 @@ function buildTodoList(ctx) {
         + '<span class="term" tabindex="0" data-def="The queue for claiming '
         + 'players nobody owns. Claims are collected and processed together on '
         + 'a set day each week rather than first-come first-served.">waivers'
-        + '</span> in the Sleeper app before your league\'s next waiver run.',
+        + '</span> in the Sleeper app'
+        + (ctx.waivers && ctx.waivers.day
+          ? (' before they run on <b>' + ctx.waivers.day + ' morning</b>')
+          : ' before your league\'s next waiver run')
+        + (ctx.waivers && ctx.waivers.faab
+          ? ('. You bid dollars out of a $' + ctx.waivers.faab
+            + ' season budget rather than taking turns, so bid what he is '
+            + 'worth to you and expect to lose some.')
+          : '.'),
     });
   }
 
@@ -531,7 +558,9 @@ function findPickup(trending, players, projections, schedule, week,
 
   /* Drop the weakest player we own who is not currently helping. */
   const droppable = myPlayers
-    .filter((p) => p)
+    /* Never suggest dropping someone stashed on injured reserve. That slot
+       costs nothing, so cutting him is pure loss. */
+    .filter((p) => p && !p.onIR)
     .sort((a, b) => {
       /* Dead weight first, then lowest projection, then worst season rank. */
       const dead = (isDeadWeight(b) ? 1 : 0) - (isDeadWeight(a) ? 1 : 0);
@@ -617,11 +646,19 @@ async function loadEverything(cfg) {
   });
 
   const startingSet = new Set(starterIds.filter((id) => id && id !== '0'));
+
+  /* Players parked in the injured reserve slot. This league has one. They sit
+     outside the normal bench: they cannot be started, and dropping one is a
+     mistake because the slot they occupy is free. */
+  const reserveSet = new Set(mine.reserve || []);
+
   const bench = (mine.players || [])
     .filter((id) => !startingSet.has(id))
     .map((id) => describe(id, players, projections, schedule, week))
     .filter(Boolean)
     .sort((a, b) => pts(b) - pts(a));
+
+  for (const p of bench) p.onIR = reserveSet.has(p.id);
 
   /* ---- who owns whom, for free-agent checks ---- */
   const ownedIds = new Set();
@@ -660,6 +697,7 @@ async function loadEverything(cfg) {
   return {
     season, week, league, lineup, bench, matchup, draftTime, draftStatus,
     gameDay,
+    waivers: waiverInfo(league),
     userId: user.user_id,
     hasProjections: !!projections,
     hasSchedule: !!schedule,
@@ -713,6 +751,7 @@ function playerRow(slot, p, unknown) {
     tag = '<span class="tag ' + cls + '">' + p.health.label + '</span>';
   }
   if (p.onBye) tag += '<span class="tag tag-bye">BYE</span>';
+  if (p.onIR) tag += '<span class="tag tag-bye">IR SLOT</span>';
 
   const where = p.onBye ? 'No game this week'
     : (p.opponent === undefined ? 'Opponent unknown'
