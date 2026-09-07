@@ -337,7 +337,7 @@ function buildTodoList(ctx) {
 
   /* --- Rule 1: empty starting slots -------------------------------------- */
   for (const s of ctx.lineup) {
-    if (s.player) continue;
+    if (s.player || s.unknown) continue;
     const fill = bestBenchFor(s.slot, ctx.bench, used);
     if (fill) used.add(fill.id);
     todos.push({
@@ -564,7 +564,11 @@ async function loadEverything(cfg) {
   const lineup = startingSlots.map((slot, i) => {
     const id = starterIds[i];
     const filled = id && id !== '0';
-    return { slot, player: filled ? describe(id, players, projections, schedule, week) : null };
+    const player = filled ? describe(id, players, projections, schedule, week) : null;
+    /* A slot can hold a player we failed to look up - an unusual position,
+       or someone Sleeper added after our cached player list was built. That
+       is NOT the same as an empty slot, and must never be reported as one. */
+    return { slot, player, unknown: !!(filled && !player) };
   });
 
   const startingSet = new Set(starterIds.filter((id) => id && id !== '0'));
@@ -639,15 +643,20 @@ function renderTodos(todos) {
   }
 }
 
-function playerRow(slot, p) {
+function playerRow(slot, p, unknown) {
   const row = document.createElement('div');
   row.className = 'player';
 
   if (!p) {
+    const title = unknown ? 'Player not recognised' : 'Empty';
+    const note = unknown
+      ? 'Someone is in this slot, but this page could not look them up'
+      : 'Nobody in this slot';
     row.innerHTML =
       '<div class="slot">' + slotLabel(slot) + '</div>'
-      + '<div class="player-main"><div class="player-name empty">Empty</div>'
-      + '<div class="player-meta">Nobody in this slot</div></div>';
+      + '<div class="player-main">'
+      + '<div class="player-name' + (unknown ? '' : ' empty') + '">' + title + '</div>'
+      + '<div class="player-meta">' + note + '</div></div>';
     return row;
   }
 
@@ -684,7 +693,7 @@ function renderRoster(data) {
   starters.innerHTML = '';
   bench.innerHTML = '';
 
-  for (const s of data.lineup) starters.appendChild(playerRow(s.slot, s.player));
+  for (const s of data.lineup) starters.appendChild(playerRow(s.slot, s.player, s.unknown));
   for (const p of data.bench)  bench.appendChild(playerRow('BN', p));
 
   el('roster-block').hidden = false;
