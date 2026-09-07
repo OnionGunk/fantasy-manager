@@ -31,9 +31,14 @@ const NON_STARTING = ['BN', 'IR', 'TAXI'];
    list, rather than using a fixed UTC schedule, so it does not drift an
    hour when the clocks change in November. */
 const CHECK_TIMES = [
-  { day: 0, hour: 10 },   /* Sunday morning - the important one */
-  { day: 3, hour: 8 },    /* Wednesday, after waivers have run */
-  { day: 4, hour: 16 },   /* Thursday afternoon, before Thursday night */
+  { day: 0, hour: 10, kind: 'lineup' },  /* Sunday morning - the big one */
+  { day: 3, hour: 8,  kind: 'lineup' },  /* Wednesday, after waivers ran */
+  { day: 4, hour: 16, kind: 'lineup' },  /* Thursday, before Thursday night */
+
+  /* Tuesday evening. Waiver claims are processed overnight, so this is the
+     last moment the decision can still be made - and the one moment nothing
+     else in the system was reaching the user. */
+  { day: 2, hour: 20, kind: 'planning' },
 ];
 
 /*
@@ -271,6 +276,101 @@ async function findProblems(cfg) {
 }
 
 /*
+  Tuesday night: is there anything worth doing before waivers run, and are
+  there byes coming that need planning?
+
+  The app does a richer version of this - it holds the full player file and
+  can see that everyone ahead of a man on his depth chart is hurt. The worker
+  has 10ms of CPU, so it settles for a cheaper signal: an unowned player who
+  is listed first on his team's depth chart is, by definition, the starter.
+*/
+async function weeklyPlanning(cfg) {
+  const state = await getJSON(API + '/v1/state/nfl');
+  const week = Number(state.display_week || state.week || 1) || 1;
+  const season = state.season;
+
+  const [league, rosters] = await Promise.all([
+    getJSON(API + '/v1/league/' + cfg.leagueId),
+    getJSON(API + '/v1/league/' + cfg.leagueId + '/rosters'),
+  ]);
+  if (league.status === 'pre_draft') return null;
+
+  const mine = (rosters || []).find((r) => r.owner_id === cfg.userId);
+  if (!mine) return null;
+
+  const owned = new Set();
+  for (const r of (rosters || [])) {
+    for (const id of (r.players || [])) owned.add(id);
+  }
+
+  const slots = (league.roster_positions || [])
+    .filter((s) => NON_STARTING.indexOf(s) === -1);
+  const starterIds = (mine.starters || []).filter((id) => id && id !== '0');
+
+  /* Everything below is bounded so the whole run stays well inside the free
+     plan's 50 subrequests and 10ms of CPU. */
+  const [trending, starters] = await Promise.all([
+    getJSON(API + '/v1/players/nfl/trending/add?lookback_hours=48&limit=25')
+      .catch(() => []),
+    Promise.all(starterIds.slice(0, slots.length).map((id) =>
+      getJSON(API + '/v1/players/nfl/' + id).catch(() => null))),
+  ]);
+
+  /* --- a pickup worth making --- */
+  const shortlist = (Array.isArray(trending) ? trending : [])
+    .map((t) => t && t.player_id)
+    .filter((id) => id && !owned.has(id))
+    .slice(0, 8);
+
+  const people = await Promise.all(shortlist.map((id) =>
+    getJSON(API + '/v1/players/nfl/' + id).catch(() => null)));
+
+  let pickup = null;
+  for (const p of people) {
+    if (!p || isOut(p) || !p.team) continue;
+    if (p.depth_chart_order !== 1) continue;   /* only outright starters */
+    if (!pickup || (p.search_rank || 99999) < (pickup.search_rank || 99999)) {
+      pickup = p;
+    }
+  }
+
+  /* --- byes that need planning now --- */
+  let byeWeek = null;
+  try {
+    const sched = await getJSON(API + '/schedule/nfl/regular/' + season);
+    for (let w = week + 1; w <= week + 3 && !byeWeek; w++) {
+      const playing = new Set();
+      for (const g of sched) {
+        if (g && g.week === w) { playing.add(g.home); playing.add(g.away); }
+      }
+      if (!playing.size) continue;
+      const off = starters.filter((p) => p && p.team && !playing.has(p.team));
+      if (off.length >= 2) byeWeek = { week: w, count: off.length };
+    }
+  } catch (e) { byeWeek = null; }
+
+  if (!pickup && !byeWeek) return null;
+  return { week, pickup, byeWeek };
+}
+
+function buildPlanningMessage(info) {
+  const bits = [];
+  if (info.pickup) {
+    bits.push(playerName(info.pickup) + ' (' + info.pickup.position + ', '
+      + info.pickup.team + ') is unowned and starting for his team.');
+  }
+  if (info.byeWeek) {
+    bits.push(info.byeWeek.count + ' of your starters are on a bye in week '
+      + info.byeWeek.week + '.');
+  }
+  return {
+    title: info.pickup ? 'Waiver claims close tonight' : 'Plan ahead for byes',
+    body: bits.join(' ') + ' Open the app for what to do.',
+    tag: 'planning',
+  };
+}
+
+/*
   The draft is the single worst thing to miss, so it gets its own countdown
   independent of the weekly lineup checks. Runs on every wake-up.
 */
@@ -439,8 +539,27 @@ export default {
       const hour = Number(parts.find((p) => p.type === 'hour').value);
       const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(dayName);
 
-      const due = CHECK_TIMES.some((t) => t.day === day && t.hour === hour);
+      const due = CHECK_TIMES.find((t) => t.day === day && t.hour === hour);
       if (!due) return;
+
+      /* Tuesday night is about next week, not this one. */
+      if (due.kind === 'planning') {
+        const info = await weeklyPlanning(cfg);
+        if (!info) return;
+
+        const sig = 'plan|' + info.week + '|'
+          + (info.pickup ? info.pickup.player_id : '-') + '|'
+          + (info.byeWeek ? info.byeWeek.week : '-');
+        if (await env.STORE.get('lastPlan') === sig) return;
+
+        const res = await sendPush(cfg.subscription, buildPlanningMessage(info), env);
+        if (res.status === 404 || res.status === 410) {
+          await env.STORE.delete('sub');
+        } else if (res.ok) {
+          await env.STORE.put('lastPlan', sig);
+        }
+        return;
+      }
 
       const { week, problems } = await findProblems(cfg);
       if (!problems.length) {

@@ -102,7 +102,7 @@ async function tryJSON(url) {
 
 /* ---- players: ~15 MB raw, trimmed to the handful of fields we use ---- */
 async function getPlayers() {
-  const hit = cacheGet('players', DAY);
+  const hit = cacheGet('players3', DAY);
   if (hit) return hit;
 
   const raw = await getJSON(API + '/v1/players/nfl');
@@ -126,11 +126,52 @@ async function getPlayers() {
       f: (p.fantasy_positions && p.fantasy_positions.length)
         ? p.fantasy_positions : [p.position],
       r: (p.search_rank == null) ? 99999 : p.search_rank,
+      /* Where he sits on his team's depth chart. This is what lets the app
+         notice that the player ahead of someone has been ruled out, which is
+         the moment a backup becomes worth owning. */
+      d: (p.depth_chart_order == null) ? null : p.depth_chart_order,
+      dp: p.depth_chart_position || null,
     };
   }
 
-  cacheSet('players', slim);
+  cacheSet('players3', slim);
   return slim;
+}
+
+/*
+  Group players by team and depth chart position, in order, so we can ask
+  "who is ahead of this man, and are they playing?" without scanning the
+  whole league every time.
+*/
+function buildDepthIndex(players) {
+  const index = {};
+  for (const id in players) {
+    const p = players[id];
+    if (!p.t || !p.dp || p.d == null) continue;
+    const key = p.t + '|' + p.dp;
+    (index[key] = index[key] || []).push({ id, name: p.n, order: p.d });
+  }
+  for (const key in index) index[key].sort((a, b) => a.order - b.order);
+  return index;
+}
+
+/*
+  Everyone listed above this player at his position whose own status says
+  they will not play. If that list is not empty, he is next in line.
+*/
+function blockersOut(playerId, players, index) {
+  const me = players[playerId];
+  if (!me || !me.t || !me.dp || me.d == null) return null;
+
+  const ahead = (index[me.t + '|' + me.dp] || [])
+    .filter((x) => x.order < me.d && x.id !== playerId);
+  if (!ahead.length) return null;
+
+  const sidelined = ahead.filter((x) => health(players[x.id]).out);
+  /* Only interesting if EVERY man ahead of him is out - otherwise someone
+     else is still taking the touches. */
+  if (!sidelined.length || sidelined.length !== ahead.length) return null;
+  return sidelined.map((x) => x.name);
 }
 
 /* ---- real NFL schedule: gives us opponents and bye weeks ---- */
@@ -391,6 +432,29 @@ function describe(playerId, players, projections, schedule, week) {
   };
 }
 
+/*
+  Which upcoming weeks leave several starters without a game.
+
+  Byes cluster. Three starters off in the same week is a hole you have to
+  plan for two weeks early, while there are still replacements on the waiver
+  wire - not something to discover on the Sunday morning.
+*/
+function upcomingByes(lineup, schedule, week, weeksAhead) {
+  if (!schedule) return [];
+  const out = [];
+  for (let w = week + 1; w <= week + weeksAhead; w++) {
+    const games = schedule[w];
+    if (!games) continue;
+    const playing = new Set();
+    for (const g of games) { playing.add(g[0]); playing.add(g[1]); }
+    const off = lineup
+      .map((s) => s.player)
+      .filter((p) => p && p.team && !playing.has(p.team));
+    if (off.length >= 2) out.push({ week: w, players: off });
+  }
+  return out;
+}
+
 /* A player who cannot help you this week at all. */
 function isDeadWeight(p) {
   return !p || p.health.out || p.onBye;
@@ -622,9 +686,15 @@ function buildTodoList(ctx) {
       level: 'info',
       rank: 'Pick up',
       action: 'Add ' + add.name + '. Drop ' + drop.name + ' to make room.',
-      why: add.name + ' (' + add.pos + ') is unowned in your league and one of '
-        + 'the most added players in the last day'
-        + (add.points != null ? ', projected for ' + add.points + ' points' : '')
+      why: add.name + ' (' + add.pos + ') is unowned in your league'
+        + (add.nextInLine
+          ? (' and just moved to the front of his team\'s depth chart &mdash; '
+            + add.nextInLine.join(' and ') + ' '
+            + (add.nextInLine.length === 1 ? 'is' : 'are') + ' out, so the '
+            + 'work should fall to him. This is the moment to claim a player, '
+            + 'before the projections catch up and everyone else notices')
+          : (' and one of the most added players in the last day'
+            + (add.points != null ? ', projected for ' + add.points + ' points' : '')))
         + '. ' + drop.name + ' is your weakest player'
         + (drop.points != null ? ' at ' + drop.points + ' projected' : '')
         + '. Put the claim in through '
@@ -646,7 +716,52 @@ function buildTodoList(ctx) {
     });
   }
 
-  /* --- Rule 5b: dates that sneak up on you -------------------------------- */
+  /* --- Rule 5a: somebody on your bench just inherited a starting job ------- */
+  for (const p of ctx.bench) {
+    if (!p || p.onIR || p.gamePlayed || isDeadWeight(p)) continue;
+    const blockers = ctx.depthIndex
+      ? blockersOut(p.id, ctx.players, ctx.depthIndex) : null;
+    if (!blockers) continue;
+
+    /* Only worth saying if he could actually go into your lineup. */
+    const slot = ctx.lineup.find((s) => s.player
+      && slotAccepts(s.slot, p.fantasyPositions)
+      && !s.player.gamePlayed
+      && (s.player.points == null || p.points == null
+        || p.points >= s.player.points - 2));
+    if (!slot) continue;
+
+    todos.push({
+      level: 'info',
+      rank: 'New starter',
+      action: 'Consider starting ' + p.name + ' over ' + slot.player.name,
+      why: 'Everyone ahead of ' + p.name + ' on his team is out ('
+        + blockers.join(', ') + '), so he should get the work this week. '
+        + 'Projections are slow to catch up to news like this, so he is '
+        + 'probably worth more than his number suggests.',
+    });
+    break; /* one of these is plenty */
+  }
+
+  /* --- Rule 5b: byes coming up that need planning now ---------------------- */
+  if (ctx.byeAhead && ctx.byeAhead.length) {
+    const b = ctx.byeAhead[0];
+    const names = b.players.map((p) => p.name);
+    todos.push({
+      level: 'info',
+      rank: 'Plan ahead',
+      action: names.length + ' of your starters are on a bye in week ' + b.week,
+      why: names.join(', ') + ' all have no game that week. That is '
+        + (b.week - ctx.week) + ' week'
+        + ((b.week - ctx.week) === 1 ? '' : 's') + ' away, so claim '
+        + 'replacements on <span class="term" tabindex="0" data-def="The queue '
+        + 'for claiming players nobody owns. Claims are processed together on a '
+        + 'set day each week.">waivers</span> now, while there is still anybody '
+        + 'worth having. Waiting until that week means picking over scraps.',
+    });
+  }
+
+  /* --- Rule 5c: dates that sneak up on you -------------------------------- */
   const lset = ctx.league.settings || {};
 
   if (lset.trade_deadline
@@ -692,7 +807,7 @@ function buildTodoList(ctx) {
 
 /* Find a worthwhile free agent, if there is one. */
 function findPickup(trending, players, projections, schedule, week,
-                    ownedIds, myPlayers) {
+                    ownedIds, myPlayers, depthIndex) {
   if (!Array.isArray(trending) || !trending.length) return null;
 
   /* Candidates: trending adds nobody in the league owns. */
@@ -702,10 +817,20 @@ function findPickup(trending, players, projections, schedule, week,
     if (!id || ownedIds.has(id)) continue;
     const p = describe(id, players, projections, schedule, week);
     if (!p || isDeadWeight(p)) continue;
+    /* Has everyone ahead of him been ruled out? Then he is first in line
+       for the touches, which is the moment a backup becomes worth owning. */
+    p.nextInLine = depthIndex ? blockersOut(id, players, depthIndex) : null;
     candidates.push(p);
   }
   if (!candidates.length) return null;
-  candidates.sort((a, b) => pts(b) - pts(a));
+
+  /* A man who just inherited a starting job beats a marginally higher
+     projection, because the projection has not caught up to the news yet. */
+  candidates.sort((a, b) => {
+    const line = (b.nextInLine ? 1 : 0) - (a.nextInLine ? 1 : 0);
+    if (line !== 0) return line;
+    return pts(b) - pts(a);
+  });
   const add = candidates[0];
 
   /* Drop the weakest player we own who is not currently helping. */
@@ -827,9 +952,12 @@ async function loadEverything(cfg) {
     .sort((a, b) => pts(b) - pts(a))
     .slice(0, 8);
 
+  const depthIndex = buildDepthIndex(players);
+
   const myPlayers = lineup.map((s) => s.player).filter(Boolean).concat(bench);
   const pickup = findPickup(trending, players, projections, schedule, week,
-                            ownedIds, bench.length ? bench : myPlayers);
+                            ownedIds, bench.length ? bench : myPlayers,
+                            depthIndex);
 
   /* ---- this week's matchup ---- */
   let matchup = null;
@@ -869,6 +997,9 @@ async function loadEverything(cfg) {
     gameDay,
     waivers: waiverInfo(league, mine),
     freeAgents,
+    players,
+    depthIndex,
+    byeAhead: upcomingByes(lineup, schedule, week, 3),
     userId: user.user_id,
     hasProjections: !!projections,
     hasSchedule: !!schedule,
