@@ -102,6 +102,25 @@
     <div id="bench" class="roster-group"></div>
   </section>
 
+  <!-- ---- EXPORT FOR CLAUDE ---- -->
+  <section class="block" id="export-block" aria-labelledby="export-heading" hidden>
+    <h2 id="export-heading">Get a second opinion</h2>
+    <p class="subtle export-intro">
+      This page follows fixed rules and never guesses. It cannot read the news
+      or judge a genuinely close call. Copy your whole situation below and
+      paste it into Claude to get that part.
+    </p>
+    <button id="btn-export" class="btn-draft" type="button">
+      Copy my team for Claude
+    </button>
+    <p id="export-status" class="export-status" hidden></p>
+    <details class="export-details">
+      <summary>See what gets copied</summary>
+      <textarea id="export-text" class="export-text" readonly rows="12"
+                aria-label="Text that will be copied"></textarea>
+    </details>
+  </section>
+
   <!-- ---- GLOSSARY ---- -->
   <section class="block" aria-labelledby="glossary-heading">
     <h2 id="glossary-heading">What the words mean</h2>

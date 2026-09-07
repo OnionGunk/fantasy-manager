@@ -636,6 +636,48 @@ main, .setup, .fatal, .draft {
 }
 .verdict-player { font-size: 0.92rem; overflow-wrap: anywhere; }
 
+/* ===========================================================
+   Export for Claude
+   =========================================================== */
+
+.export-intro { margin: 0 0 14px; }
+
+#btn-export { margin-top: 0; }
+
+.export-status {
+  margin: 12px 0 0;
+  padding: 11px 13px;
+  border-radius: 9px;
+  font-size: 0.88rem;
+  background: var(--good-bg);
+  color: var(--good);
+  border: 1px solid var(--good);
+}
+
+.export-details { margin-top: 14px; }
+.export-details summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--info);
+  padding: 4px 0;
+}
+
+.export-text {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  white-space: pre;
+  overflow-x: auto;
+  resize: vertical;
+}
+
 .trade-warn {
   margin-top: 14px;
   padding: 12px 14px;

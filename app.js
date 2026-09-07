@@ -326,6 +326,17 @@ function slotAccepts(slot, fantasyPositions) {
   return (fantasyPositions || []).some((p) => allowed.indexOf(p) !== -1);
 }
 
+/*
+  "vs NO" for a home game, "at MIA" for an away one. opponentFor() marks away
+  games with a leading @, so prefixing that with "vs" reads as "vs @MIA".
+  Returns null when we do not know.
+*/
+function opponentLabel(p) {
+  if (!p || p.onBye || p.opponent === undefined || p.opponent === null) return null;
+  const o = String(p.opponent);
+  return (o.charAt(0) === '@') ? ('at ' + o.slice(1)) : ('vs ' + o);
+}
+
 function slotLabel(slot) {
   return (slot === 'SUPER_FLEX') ? 'SFLX'
     : (slot.indexOf('FLEX') !== -1 || slot === 'WRRB_WRT') ? 'FLEX'
@@ -807,6 +818,15 @@ async function loadEverything(cfg) {
     for (const id of (r.players || [])) ownedIds.add(id);
   }
 
+  /* Unowned players worth knowing about, for the export. */
+  const freeAgents = (Array.isArray(trending) ? trending : [])
+    .map((row) => row && row.player_id)
+    .filter((id) => id && !ownedIds.has(id))
+    .map((id) => describe(id, players, projections, schedule, week))
+    .filter((p) => p && !p.health.out && !p.onBye)
+    .sort((a, b) => pts(b) - pts(a))
+    .slice(0, 8);
+
   const myPlayers = lineup.map((s) => s.player).filter(Boolean).concat(bench);
   const pickup = findPickup(trending, players, projections, schedule, week,
                             ownedIds, bench.length ? bench : myPlayers);
@@ -829,7 +849,16 @@ async function loadEverything(cfg) {
       matchup = {
         mine:  { name: nameOf(mine.roster_id), points: meRow.points || 0 },
         theirs: oppRow
-          ? { name: nameOf(oppRow.roster_id), points: oppRow.points || 0 }
+          ? {
+            name: nameOf(oppRow.roster_id),
+            points: oppRow.points || 0,
+            /* Their lineup too, so an export can show both sides. */
+            lineup: (oppRow.starters || []).map((id, i) => ({
+              slot: startingSlots[i] || '?',
+              player: (id && id !== '0')
+                ? describe(id, players, projections, schedule, week) : null,
+            })),
+          }
           : null,
       };
     }
@@ -839,6 +868,7 @@ async function loadEverything(cfg) {
     season, week, league, lineup, bench, matchup, draftTime, draftStatus,
     gameDay,
     waivers: waiverInfo(league, mine),
+    freeAgents,
     userId: user.user_id,
     hasProjections: !!projections,
     hasSchedule: !!schedule,
@@ -895,8 +925,7 @@ function playerRow(slot, p, unknown) {
   if (p.onIR) tag += '<span class="tag tag-bye">IR SLOT</span>';
 
   const where = p.onBye ? 'No game this week'
-    : (p.opponent === undefined ? 'Opponent unknown'
-      : ('vs ' + p.opponent));
+    : (opponentLabel(p) || 'Opponent unknown');
 
   const meta = [p.pos, p.team || 'no team', where].join(' &middot; ');
 
@@ -985,6 +1014,133 @@ function renderNote(data) {
     + ' this time, so some advice above is less specific than usual. '
     + 'Injury and empty-slot checks still work.';
   note.hidden = false;
+}
+
+/* ===========================================================================
+   Export for Claude
+
+   This page is deliberately dumb: fixed rules over public data, no AI, no
+   cost. What it cannot do is read the news, weigh a genuinely close call, or
+   know that a coach said something on Monday. So this builds one block of
+   text you can paste into Claude to get exactly that.
+
+   It is written as a complete prompt rather than a data dump, so pasting it
+   is the only thing you have to do.
+   =========================================================================== */
+
+function pad(s, n) {
+  s = String(s == null ? '' : s);
+  return (s.length >= n) ? s : s + new Array(n - s.length + 1).join(' ');
+}
+
+/* Strip the HTML we use for tooltips - this is going into plain text. */
+function plain(html) {
+  return String(html).replace(/<[^>]*>/g, '').replace(/&mdash;/g, '-')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+}
+
+function exportPlayerLine(slot, p, onIR) {
+  if (!p) return '  ' + pad(slot ? slotLabel(slot) : '--', 6) + 'EMPTY SLOT';
+  const where = p.onBye ? 'BYE WEEK' : (opponentLabel(p) || 'opp ?');
+  const status = (p.health.label ? p.health.label : 'healthy')
+    + (onIR ? ' (on IR slot)' : '');
+  return '  ' + pad(slot ? slotLabel(slot) : p.pos, 6)
+    + pad(p.name, 24)
+    + pad(p.team || '--', 5)
+    + pad(where, 11)
+    + pad(p.points != null ? ('proj ' + p.points) : 'proj ?', 12)
+    + status;
+}
+
+function buildExport(data, todos) {
+  const L = [];
+  const s = (data.league.settings) || {};
+
+  L.push('I play in a fantasy football league and I know almost nothing about');
+  L.push('football. Below is my exact situation this week, pulled live from the');
+  L.push('Sleeper API. Please tell me:');
+  L.push('  1. Any lineup changes I should make, and why');
+  L.push('  2. Anyone I should pick up or drop');
+  L.push('  3. Anything I am missing that the numbers do not show');
+  L.push('Use recent news and injury reports if you have them. Keep it short and');
+  L.push('plain, and tell me what to do rather than giving me options.');
+  L.push('');
+  L.push('=== LEAGUE ===');
+  L.push('Week ' + data.week + ' of the ' + data.season + ' season.');
+  L.push('Scoring: ' + (Number(s.rec) >= 1 ? 'full PPR (1 point per catch)'
+    : Number(s.rec) >= 0.5 ? 'half PPR' : 'standard, no PPR')
+    + ', ' + (s.pass_td || 4) + ' point passing TDs.');
+  L.push('Starting lineup: '
+    + (data.league.roster_positions || [])
+      .filter((x) => NON_STARTING.indexOf(x) === -1).map(slotLabel).join(', '));
+  L.push('Teams: ' + (s.num_teams || '?') + '. '
+    + (data.waivers.day ? ('Waivers run ' + data.waivers.day + '. ') : '')
+    + (data.waivers.remaining != null
+      ? ('Waiver budget left: $' + data.waivers.remaining + ' of $'
+        + data.waivers.faab + '.') : ''));
+  if (s.playoff_week_start) {
+    L.push('Playoffs start week ' + s.playoff_week_start
+      + '. Trade deadline is week ' + (s.trade_deadline || '?') + '.');
+  }
+
+  L.push('');
+  L.push('=== MY TEAM' + (data.matchup ? ' (' + data.matchup.mine.name + ')' : '')
+    + ' ===');
+  L.push('STARTING:');
+  for (const row of data.lineup) L.push(exportPlayerLine(row.slot, row.player));
+  if (data.bench.length) {
+    L.push('BENCH:');
+    for (const p of data.bench) L.push(exportPlayerLine('BN', p, p.onIR));
+  }
+
+  if (data.matchup && data.matchup.theirs) {
+    L.push('');
+    L.push('=== THIS WEEK I PLAY: ' + data.matchup.theirs.name + ' ===');
+    L.push('Score right now - me ' + data.matchup.mine.points.toFixed(1)
+      + ', them ' + data.matchup.theirs.points.toFixed(1) + '.');
+    if (data.matchup.theirs.lineup && data.matchup.theirs.lineup.length) {
+      L.push('Their starting lineup:');
+      for (const row of data.matchup.theirs.lineup) {
+        L.push(exportPlayerLine(row.slot, row.player));
+      }
+    }
+  }
+
+  if (data.freeAgents && data.freeAgents.length) {
+    L.push('');
+    L.push('=== AVAILABLE PLAYERS (nobody in the league owns these) ===');
+    for (const p of data.freeAgents) L.push(exportPlayerLine(null, p));
+  }
+
+  L.push('');
+  L.push('=== WHAT MY OWN APP ALREADY TOLD ME ===');
+  L.push('(fixed rules over the same data, no AI - say if you disagree)');
+  todos.forEach((t, i) => {
+    L.push((i + 1) + '. ' + plain(t.action));
+    L.push('   ' + plain(t.why));
+  });
+
+  return L.join('\n');
+}
+
+async function copyExport() {
+  const text = el('export-text').value;
+  const status = el('export-status');
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch (e) {
+    /* Older browsers, or a page without clipboard permission. */
+    try {
+      el('export-text').select();
+      ok = document.execCommand('copy');
+    } catch (e2) { ok = false; }
+  }
+  status.textContent = ok
+    ? 'Copied. Paste it into Claude.'
+    : 'Could not copy automatically - select the text below and copy it yourself.';
+  status.hidden = false;
 }
 
 /* ===========================================================================
@@ -1127,9 +1283,15 @@ async function run(cfg) {
     lastData = data;
     renderDraftButton(data);
     renderHeader(data);
-    renderTodos(buildTodoList(data));
+    const todos = buildTodoList(data);
+    renderTodos(todos);
     renderWhenToCheck(data);
     renderNote(data);
+
+    /* Build the paste-into-Claude block from the same data the page shows. */
+    el('export-text').value = buildExport(data, todos);
+    el('export-block').hidden = (data.league.status === 'pre_draft');
+    el('export-status').hidden = true;
     renderMatchup(data);
     renderRoster(data);
 
@@ -1190,6 +1352,8 @@ function wireControls() {
     draftDismissed = false;
     if (lastData) enterDraftMode(lastData, loadConfig());
   });
+
+  el('btn-export').addEventListener('click', copyExport);
 
   el('btn-trade').addEventListener('click', () => {
     if (lastData) enterTradeMode(lastData);

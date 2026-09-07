@@ -110,6 +110,24 @@ Otherwise the margin is ~10 projected points over a full season. Anything
 inside that is noise, and the verdict is to keep what you have rather than
 churn for no reason.
 
+## Export for Claude
+
+This page is deliberately dumb: fixed rules over public data, no AI, nothing
+to pay for. What it cannot do is read the news, weigh a genuinely close call,
+or know what a coach said on Monday.
+
+So "Copy my team for Claude" builds one block of plain text covering the
+league rules, my full lineup and bench with injuries and opponents, the
+opponent's lineup, the current score, the best unowned players, and the
+to-do list this page already produced.
+
+It is written as a complete prompt, not a data dump, so pasting it is the
+only thing you have to do. It also tells Claude what the rules engine already
+concluded and invites disagreement, so the two are not talking past each
+other.
+
+Costs nothing unless you actually use it, which keeps the app itself free.
+
 ## Endpoints used
 
 Documented and stable:
