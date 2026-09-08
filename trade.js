@@ -50,6 +50,35 @@ async function enterTradeMode(data) {
   const byId = {};
   for (const p of pool) byId[p.id] = p;
 
+  /*
+    The pool only holds players with a season projection - about 600 of them.
+    A league rosters 168, so nearly everyone is covered, but a practice-squad
+    callup or an unprojected rookie can be missing.
+
+    Leaving them out would mean an offer involving one simply could not be
+    checked, and the player would appear not to exist. Better to list him and
+    be honest that his value is unknown. `pool` itself stays projection-only,
+    because replacement levels need real numbers.
+  */
+  const addUnprojected = (id) => {
+    if (byId[id]) return;
+    const pl = players[id];
+    if (!pl) return;
+    byId[id] = {
+      id,
+      name: pl.n,
+      pos: rankablePosition(pl) || pl.p,
+      team: pl.t,
+      pts: null,
+      adp: null,
+      health: health(pl),
+      noProjection: true,
+    };
+  };
+  for (const r of rosters) {
+    for (const id of (r.players || [])) addUnprojected(id);
+  }
+
   const teams = (league.settings && league.settings.num_teams) || rosters.length || 12;
   const replacement = replacementPoints(pool, league.roster_positions, teams);
 
@@ -72,7 +101,7 @@ async function enterTradeMode(data) {
   const myPlayers = (mine.players || [])
     .map((id) => byId[id])
     .filter(Boolean)
-    .sort((a, b) => b.pts - a.pts);
+    .sort((a, b) => (b.pts || 0) - (a.pts || 0));
 
   /* Everyone somebody else owns, in one searchable list, tagged with whose
      team they are on so you know who you would be trading with. */
@@ -85,7 +114,7 @@ async function enterTradeMode(data) {
       if (p) theirs.push(Object.assign({ owner }, p));
     }
   }
-  theirs.sort((a, b) => b.pts - a.pts);
+  theirs.sort((a, b) => (b.pts || 0) - (a.pts || 0));
 
   tradeState.ctx = {
     league, byId, replacement, myPlayers, theirs,
@@ -149,7 +178,8 @@ function renderPickerList(side) {
     + '<span class="picker-meta">' + p.pos
     + (p.team ? ' &middot; ' + p.team : '')
     + (p.owner ? ' &middot; ' + p.owner : '')
-    + ' &middot; ' + Math.round(p.pts) + ' pts</span>'
+    + (p.pts == null ? ' &middot; no projection'
+      : (' &middot; ' + Math.round(p.pts) + ' pts')) + '</span>'
     + '</button>').join('')
     + (matches.length > LIST_LIMIT
       ? ('<div class="picker-empty">' + (matches.length - LIST_LIMIT)
@@ -254,7 +284,9 @@ function selectedIds(side) {
    The verdict
    --------------------------------------------------------------------------- */
 
+/* Null for a player nobody has projected - not zero, which would be a lie. */
 function vorOf(p, replacement) {
+  if (!p || p.pts == null) return null;
   return Math.round((p.pts - (replacement[p.pos] || 0)) * 10) / 10;
 }
 
@@ -266,8 +298,17 @@ function judgeTrade(getIds, giveIds, c) {
     return { error: 'Pick at least one player on one side.' };
   }
 
-  const getVor = get.reduce((sum, p) => sum + vorOf(p, c.replacement), 0);
-  const giveVor = give.reduce((sum, p) => sum + vorOf(p, c.replacement), 0);
+  /* Anyone without a projection is left out of the arithmetic and named in
+     the verdict, rather than silently counted as worthless. */
+  const unknown = get.concat(give).filter((p) => p.pts == null);
+
+  const sumVor = (list) => list.reduce((sum, p) => {
+    const v = vorOf(p, c.replacement);
+    return sum + (v == null ? 0 : v);
+  }, 0);
+
+  const getVor = sumVor(get);
+  const giveVor = sumVor(give);
   const net = Math.round((getVor - giveVor) * 10) / 10;
 
   /* What my roster looks like afterwards. */
@@ -304,8 +345,29 @@ function judgeTrade(getIds, giveIds, c) {
     };
   }
 
+  /*
+    If nothing in the deal has a projection, there is no arithmetic to do.
+    Saying "too close to call" would imply a measurement that never happened.
+  */
+  if (unknown.length === get.length + give.length) {
+    return {
+      verdict: 'CANNOT TELL',
+      level: 'close',
+      net: 0,
+      headline: 'Not enough information',
+      why: 'Nobody has published a season projection for '
+        + unknown.map((p) => p.name).join(' or ')
+        + ', so there is nothing to weigh. That usually means very lightly '
+        + 'used players. Your lineup would still be legal either way &mdash; '
+        + 'if you are unsure, keeping what you know is the safer choice.',
+      get, give, overLimit, unknown: unknown.length,
+    };
+  }
+
   /* --- otherwise it is about value --- */
-  const best = get.concat(give).sort((a, b) => vorOf(b, c.replacement) - vorOf(a, c.replacement))[0];
+  const best = get.concat(give)
+    .filter((p) => p.pts != null)
+    .sort((a, b) => vorOf(b, c.replacement) - vorOf(a, c.replacement))[0];
   const bestIsIncoming = best && get.indexOf(best) !== -1;
 
   let verdict, level, headline, why;
@@ -340,7 +402,18 @@ function judgeTrade(getIds, giveIds, c) {
       + 'is the simpler choice.';
   }
 
-  return { verdict, level, net, headline, why, get, give, overLimit };
+  /* Say plainly when part of the deal could not be valued. */
+  if (unknown.length) {
+    const who = unknown.map((p) => p.name).join(' and ');
+    why += ' One caveat: nobody has published a season projection for '
+      + who + ', so ' + (unknown.length === 1 ? 'he was' : 'they were')
+      + ' left out of the maths. If ' + (unknown.length === 1 ? 'he is' : 'they are')
+      + ' the point of the trade, treat this verdict as a rough guide rather '
+      + 'than an answer.';
+  }
+
+  return { verdict, level, net, headline, why, get, give, overLimit,
+    unknown: unknown.length };
 }
 
 function renderVerdict(r) {
@@ -354,8 +427,9 @@ function renderVerdict(r) {
   const list = (players, label) => players.length
     ? ('<div class="verdict-side"><div class="verdict-side-label">' + label
       + '</div>' + players.map((p) => '<div class="verdict-player">' + p.name
-      + ' <span class="subtle">(' + p.pos + ', ' + Math.round(p.pts)
-      + ' pts)</span></div>').join('') + '</div>')
+      + ' <span class="subtle">(' + p.pos + ', '
+      + (p.pts == null ? 'no projection' : (Math.round(p.pts) + ' pts'))
+      + ')</span></div>').join('') + '</div>')
     : '';
 
   let extra = '';
