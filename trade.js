@@ -18,7 +18,7 @@
    week, which is well inside the error bars on any projection. */
 const TRADE_CLEAR_MARGIN = 10;
 
-const tradeState = { ctx: null };
+const tradeState = { ctx: null, chosen: { get: [], give: [] } };
 
 /* ---------------------------------------------------------------------------
    Loading
@@ -74,16 +74,18 @@ async function enterTradeMode(data) {
     .filter(Boolean)
     .sort((a, b) => b.pts - a.pts);
 
-  /* Everyone somebody else owns, grouped by whose team they are on. */
+  /* Everyone somebody else owns, in one searchable list, tagged with whose
+     team they are on so you know who you would be trading with. */
   const theirs = [];
   for (const r of rosters) {
     if (r.roster_id === mine.roster_id) continue;
-    const owned = (r.players || [])
-      .map((id) => byId[id])
-      .filter(Boolean)
-      .sort((a, b) => b.pts - a.pts);
-    if (owned.length) theirs.push({ team: nameOf(r.roster_id), players: owned });
+    const owner = nameOf(r.roster_id);
+    for (const id of (r.players || [])) {
+      const p = byId[id];
+      if (p) theirs.push(Object.assign({ owner }, p));
+    }
   }
+  theirs.sort((a, b) => b.pts - a.pts);
 
   tradeState.ctx = {
     league, byId, replacement, myPlayers, theirs,
@@ -91,6 +93,8 @@ async function enterTradeMode(data) {
     rosterLimit: (league.roster_positions || []).length,
     myPlayerIds: new Set(mine.players || []),
   };
+  /* Start every visit with an empty offer. */
+  tradeState.chosen = { get: [], give: [] };
 
   renderTradeForm();
 }
@@ -104,28 +108,94 @@ function wireLeaveTrade() {
    The form
    --------------------------------------------------------------------------- */
 
-function optionsForMine(myPlayers) {
-  return '<option value="">&mdash; nobody &mdash;</option>'
-    + myPlayers.map((p) => '<option value="' + p.id + '">' + p.name
-      + ' (' + p.pos + (p.team ? ', ' + p.team : '') + ')</option>').join('');
+/* Up to three players a side, same as Sleeper allows in practice. */
+const MAX_PER_SIDE = 3;
+const LIST_LIMIT = 40;
+
+/*
+  A browsable list that a search box narrows, rather than a dropdown of a
+  hundred and fifty names. Typing filters; tapping a name adds it.
+*/
+function poolFor(side) {
+  const c = tradeState.ctx;
+  return (side === 'get') ? c.theirs : c.myPlayers;
 }
 
-function optionsForTheirs(theirs) {
-  return '<option value="">&mdash; nobody &mdash;</option>'
-    + theirs.map((group) => '<optgroup label="' + group.team + '">'
-      + group.players.map((p) => '<option value="' + p.id + '">' + p.name
-        + ' (' + p.pos + (p.team ? ', ' + p.team : '') + ')</option>').join('')
-      + '</optgroup>').join('');
+function renderPickerList(side) {
+  const c = tradeState.ctx;
+  const query = (el('search-' + side).value || '').trim().toLowerCase();
+  const chosen = tradeState.chosen[side];
+
+  const matches = poolFor(side).filter((p) => {
+    if (chosen.indexOf(p.id) !== -1) return false;
+    if (!query) return true;
+    return (p.name + ' ' + p.pos + ' ' + (p.team || '')).toLowerCase()
+      .indexOf(query) !== -1;
+  });
+
+  const box = el('list-' + side);
+
+  if (!matches.length) {
+    box.innerHTML = '<div class="picker-empty">'
+      + (query ? 'No player matches that.' : 'Nobody left to choose.')
+      + '</div>';
+    return;
+  }
+
+  box.innerHTML = matches.slice(0, LIST_LIMIT).map((p) =>
+    '<button type="button" class="picker-row" data-side="' + side
+    + '" data-id="' + p.id + '">'
+    + '<span class="picker-name">' + p.name + '</span>'
+    + '<span class="picker-meta">' + p.pos
+    + (p.team ? ' &middot; ' + p.team : '')
+    + (p.owner ? ' &middot; ' + p.owner : '')
+    + ' &middot; ' + Math.round(p.pts) + ' pts</span>'
+    + '</button>').join('')
+    + (matches.length > LIST_LIMIT
+      ? ('<div class="picker-empty">' + (matches.length - LIST_LIMIT)
+        + ' more &mdash; keep typing to narrow it down.</div>') : '');
+}
+
+function renderChosen(side) {
+  const chosen = tradeState.chosen[side];
+  const pool = poolFor(side);
+  el('chosen-' + side).innerHTML = chosen.map((id) => {
+    const p = pool.find((x) => x.id === id);
+    return '<span class="chip">' + (p ? p.name : id)
+      + '<button type="button" class="chip-x" data-side="' + side
+      + '" data-id="' + id + '" aria-label="Remove">&times;</button></span>';
+  }).join('');
+
+  el('search-' + side).disabled = (chosen.length >= MAX_PER_SIDE);
+  el('search-' + side).placeholder = (chosen.length >= MAX_PER_SIDE)
+    ? 'Three is the most you can pick'
+    : 'Type a name to narrow the list';
+}
+
+function pickerSection(side, heading) {
+  return '<h2 class="draft-h2">' + heading + '</h2>'
+    + '<div class="chosen" id="chosen-' + side + '"></div>'
+    + '<input class="picker-search" id="search-' + side + '" type="text" '
+    + 'autocapitalize="none" autocorrect="off" spellcheck="false" '
+    + 'placeholder="Type a name to narrow the list">'
+    + '<div class="picker-list" id="list-' + side + '"></div>';
 }
 
 function renderTradeForm() {
   const c = tradeState.ctx;
-  const getOpts = optionsForTheirs(c.theirs);
-  const giveOpts = optionsForMine(c.myPlayers);
 
-  const row = (side, opts, i) =>
-    '<select class="trade-select" data-side="' + side + '" data-i="' + i + '">'
-    + opts + '</select>';
+  if (!c.myPlayers.length || !c.theirs.length) {
+    el('trade').innerHTML =
+      '<div class="draft-top"><div><h1>Trade checker</h1></div>'
+      + '<button id="btn-leave-trade" class="btn-icon" '
+      + 'aria-label="Close">&times;</button></div>'
+      + '<div class="draft-wait"><p class="draft-wait-title">Nothing to trade yet</p>'
+      + '<p class="subtle">Nobody in your league owns any players, so there is '
+      + 'nothing to put on either side. This becomes usable once your draft '
+      + 'is done.</p></div>';
+    wireLeaveTrade();
+    return;
+  }
 
   el('trade').innerHTML =
     '<div class="draft-top">'
@@ -134,15 +204,8 @@ function renderTradeForm() {
     + '<button id="btn-leave-trade" class="btn-icon" title="Close" '
     + 'aria-label="Close trade checker">&times;</button></div>'
 
-    + '<h2 class="draft-h2">They give you</h2>'
-    + '<div id="get-rows" class="trade-rows">'
-    + row('get', getOpts, 0) + '</div>'
-    + '<button class="linklike trade-add" data-add="get">+ add another player</button>'
-
-    + '<h2 class="draft-h2">You give them</h2>'
-    + '<div id="give-rows" class="trade-rows">'
-    + row('give', giveOpts, 0) + '</div>'
-    + '<button class="linklike trade-add" data-add="give">+ add another player</button>'
+    + pickerSection('get', 'They give you')
+    + pickerSection('give', 'You give them')
 
     + '<button id="btn-check-trade" class="btn-primary">Check this trade</button>'
     + '<div id="trade-verdict"></div>'
@@ -152,31 +215,39 @@ function renderTradeForm() {
     + 'Sleeper app once you have a verdict.</p>';
 
   wireLeaveTrade();
-
   el('btn-check-trade').addEventListener('click', checkTrade);
 
-  for (const btn of document.querySelectorAll('.trade-add')) {
-    btn.addEventListener('click', () => {
-      const side = btn.getAttribute('data-add');
-      const box = el(side + '-rows');
-      if (box.children.length >= 3) return;
-      const opts = (side === 'get') ? getOpts : giveOpts;
-      const sel = document.createElement('select');
-      sel.className = 'trade-select';
-      sel.setAttribute('data-side', side);
-      sel.innerHTML = opts;
-      box.appendChild(sel);
-      if (box.children.length >= 3) btn.hidden = true;
-    });
+  for (const side of ['get', 'give']) {
+    el('search-' + side).addEventListener('input', () => renderPickerList(side));
+    renderChosen(side);
+    renderPickerList(side);
   }
+
+  /* One listener for the whole panel, since the lists are rebuilt as you type. */
+  el('trade').addEventListener('click', (e) => {
+    const row = e.target.closest('.picker-row');
+    if (row) {
+      const side = row.getAttribute('data-side');
+      const chosen = tradeState.chosen[side];
+      if (chosen.length < MAX_PER_SIDE) chosen.push(row.getAttribute('data-id'));
+      el('search-' + side).value = '';
+      renderChosen(side);
+      renderPickerList(side);
+      return;
+    }
+    const x = e.target.closest('.chip-x');
+    if (x) {
+      const side = x.getAttribute('data-side');
+      const id = x.getAttribute('data-id');
+      tradeState.chosen[side] = tradeState.chosen[side].filter((v) => v !== id);
+      renderChosen(side);
+      renderPickerList(side);
+    }
+  });
 }
 
 function selectedIds(side) {
-  const out = [];
-  for (const sel of document.querySelectorAll('.trade-select[data-side="' + side + '"]')) {
-    if (sel.value) out.push(sel.value);
-  }
-  return out;
+  return tradeState.chosen[side].slice();
 }
 
 /* ---------------------------------------------------------------------------
@@ -315,6 +386,7 @@ function checkTrade() {
 
 function exitTradeMode() {
   tradeState.ctx = null;
+  tradeState.chosen = { get: [], give: [] };
   el('trade').hidden = true;
   el('trade').innerHTML = '';
   el('app').hidden = false;

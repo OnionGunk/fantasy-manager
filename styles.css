@@ -563,9 +563,9 @@ main, .setup, .fatal, .draft {
    Trade checker
    =========================================================== */
 
-.trade-rows { display: flex; flex-direction: column; gap: 8px; }
+/* ---- searchable player picker ---- */
 
-.trade-select {
+.picker-search {
   width: 100%;
   padding: 13px 12px;
   font-size: 16px;          /* 16px stops iOS zooming in on focus */
@@ -575,9 +575,74 @@ main, .setup, .fatal, .draft {
   border: 1px solid var(--line);
   border-radius: 10px;
 }
-.trade-select:focus { outline: 2px solid var(--info); outline-offset: 1px; }
+.picker-search:focus { outline: 2px solid var(--info); outline-offset: 1px; }
+.picker-search[disabled] { opacity: 0.5; }
 
-.trade-add { margin-top: 9px; display: inline-block; }
+.picker-list {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.picker-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 11px 14px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font);
+  color: var(--text);
+  cursor: pointer;
+}
+.picker-row:last-child { border-bottom: 0; }
+.picker-row:active { background: var(--surface-2); }
+
+.picker-name { display: block; font-weight: 600; font-size: 0.95rem; }
+.picker-meta {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+
+.picker-empty {
+  padding: 14px;
+  font-size: 0.85rem;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* ---- what you have picked ---- */
+
+.chosen { display: flex; flex-wrap: wrap; gap: 7px; }
+.chosen:not(:empty) { margin-bottom: 10px; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 7px 12px;
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  border-radius: 999px;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.chip-x {
+  border: 0;
+  background: none;
+  color: var(--info);
+  font-size: 1.15rem;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
 
 #btn-check-trade { margin-top: 26px; }
 
