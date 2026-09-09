@@ -439,18 +439,79 @@ function describe(playerId, players, projections, schedule, week) {
   plan for two weeks early, while there are still replacements on the waiver
   wire - not something to discover on the Sunday morning.
 */
-function upcomingByes(lineup, schedule, week, weeksAhead) {
-  if (!schedule) return [];
+/*
+  Which starting slots could this set of available players actually fill?
+
+  Strict slots first, then flex from whatever is left over, so a flex slot
+  never swallows a player that a dedicated slot needed more. Returns the
+  slots that would be left empty.
+*/
+function unfillableSlots(availableByPos, startingSlots) {
+  const pool = Object.assign({}, availableByPos);
+  const empty = [];
+
+  const strict = startingSlots.filter((s) => !FLEX_SLOTS[s]);
+  const flex = startingSlots.filter((s) => FLEX_SLOTS[s]);
+
+  for (const slot of strict) {
+    if (pool[slot] > 0) pool[slot] -= 1;
+    else empty.push(slot);
+  }
+  for (const slot of flex) {
+    const taken = FLEX_SLOTS[slot].find((pos) => pool[pos] > 0);
+    if (taken) pool[taken] -= 1;
+    else empty.push(slot);
+  }
+  return empty;
+}
+
+/*
+  Weeks ahead where the roster cannot field a full lineup.
+
+  The old version of this counted how many *starters* had a bye and spoke up
+  at two or more, three weeks ahead. That is the wrong question twice over.
+  Two starters resting is harmless when the bench covers them, and it looked
+  only at the starters, so it could not tell. Meanwhile a lone kicker on a
+  bye with nobody behind him - a guaranteed zero - never reached the
+  threshold and was never mentioned at all.
+
+  What matters is whether every slot can be filled by somebody. That is rare
+  enough to be worth saying every time it is true, and it is always worth
+  real points, which is the bar for saying anything at all.
+
+  Scans the whole remaining season rather than a fixed window: an empty slot
+  is worth knowing about early, while there is still a trade or a waiver
+  claim that could fix it.
+*/
+function upcomingByes(lineup, bench, schedule, week, startingSlots) {
+  if (!schedule || !startingSlots || !startingSlots.length) return [];
+
+  /* Everyone who could be started. Injured reserve cannot, so it is out. */
+  const roster = lineup.map((s) => s.player)
+    .concat(bench || [])
+    .filter((p) => p && p.team && p.pos && !p.onIR);
+  if (!roster.length) return [];
+
   const out = [];
-  for (let w = week + 1; w <= week + weeksAhead; w++) {
+  for (let w = week + 1; w <= 18; w++) {
     const games = schedule[w];
     if (!games) continue;
+
     const playing = new Set();
     for (const g of games) { playing.add(g[0]); playing.add(g[1]); }
-    const off = lineup
-      .map((s) => s.player)
-      .filter((p) => p && p.team && !playing.has(p.team));
-    if (off.length >= 2) out.push({ week: w, players: off });
+
+    const availableByPos = {};
+    const off = [];
+    for (const p of roster) {
+      if (playing.has(p.team)) {
+        availableByPos[p.pos] = (availableByPos[p.pos] || 0) + 1;
+      } else {
+        off.push(p);
+      }
+    }
+
+    const empty = unfillableSlots(availableByPos, startingSlots);
+    if (empty.length) out.push({ week: w, empty, players: off });
   }
   return out;
 }
@@ -756,18 +817,34 @@ function buildTodoList(ctx) {
   /* --- Rule 5b: byes coming up that need planning now ---------------------- */
   if (ctx.byeAhead && ctx.byeAhead.length) {
     const b = ctx.byeAhead[0];
+    const away = b.week - ctx.week;
+    const slots = b.empty.map(slotLabel);
     const names = b.players.map((p) => p.name);
+
+    /* Close enough to act on is a warning; months out is a heads-up. */
     todos.push({
-      level: 'info',
-      rank: 'Plan ahead',
-      action: names.length + ' of your starters are on a bye in week ' + b.week,
-      why: names.join(', ') + ' all have no game that week. That is '
-        + (b.week - ctx.week) + ' week'
-        + ((b.week - ctx.week) === 1 ? '' : 's') + ' away, so claim '
-        + 'replacements on <span class="term" tabindex="0" data-def="The queue '
+      level: (away <= 2) ? 'warn' : 'info',
+      rank: (away <= 2) ? 'Bye week gap' : 'Plan ahead',
+      action: 'In week ' + b.week + ' you cannot fill '
+        + (slots.length === 1
+          ? ('your ' + slots[0] + ' slot')
+          : (slots.length + ' starting slots (' + slots.join(', ') + ')')),
+      why: (names.length
+        ? (names.join(', ') + ' '
+          + (names.length === 1 ? 'is' : 'are') + ' on a bye that week, which '
+          + 'leaves nobody for ' + (slots.length === 1 ? 'that slot' : 'those slots') + '. ')
+        : '')
+        + 'An empty slot scores zero, and no lineup change can fix it on the '
+        + 'day - the player has to already be on your roster. That is '
+        + away + ' week' + (away === 1 ? '' : 's') + ' away, so claim '
+        + 'somebody on <span class="term" tabindex="0" data-def="The queue '
         + 'for claiming players nobody owns. Claims are processed together on a '
-        + 'set day each week.">waivers</span> now, while there is still anybody '
-        + 'worth having. Waiting until that week means picking over scraps.',
+        + 'set day each week.">waivers</span> while there is still anybody '
+        + 'worth having'
+        + (away > 4
+          ? ', or trade for someone on a different bye. There is plenty of '
+            + 'time, but nothing fixes itself.'
+          : '. Waiting until that week means picking over scraps.'),
     });
   }
 
@@ -817,27 +894,56 @@ function buildTodoList(ctx) {
 
 /* Find a worthwhile free agent, if there is one. */
 /*
+  Everybody nobody owns, ranked.
+
+  This used to be Sleeper's "most added in the last 24 hours" list - twenty
+  five names. That is a popularity contest, not a search. The best free agent
+  on the wire was invisible unless other managers happened to be adding him
+  that day, which meant the app could report "nothing to do" while a useful
+  player sat there unowned all week.
+
+  Anyone with a projection for this week is worth considering; the rest are
+  third-stringers and noise. If the projections feed is down we fall back to
+  the trending list, which is worse but is at least something.
+*/
+function buildFreeAgentPool(players, projections, schedule, week, ownedIds,
+                            depthIndex, trendingIds) {
+  const haveProj = !!projections;
+  const pool = [];
+
+  for (const id in players) {
+    if (ownedIds.has(id)) continue;
+    if (haveProj ? !projections[id] : !(trendingIds && trendingIds.has(id))) continue;
+
+    const p = describe(id, players, projections, schedule, week);
+    if (!p || isDeadWeight(p)) continue;
+    p.trending = !!(trendingIds && trendingIds.has(id));
+    pool.push(p);
+  }
+
+  pool.sort((a, b) => pts(b) - pts(a));
+
+  /*
+    Depth-chart lookups are the expensive part, so only ask about players
+    good enough to matter. Anyone below the top of the pool is not going to
+    win the comparison against a rostered player anyway.
+  */
+  for (const p of pool.slice(0, 60)) {
+    /* Has everyone ahead of him been ruled out? Then he is first in line
+       for the touches, which is the moment a backup becomes worth owning. */
+    p.nextInLine = depthIndex ? blockersOut(p.id, players, depthIndex) : null;
+  }
+  return pool;
+}
+
+/*
   `myPlayers` is the pool we are allowed to drop from - the bench, when
   there is one. `allMine` is the whole roster, and is what decides whether
   a position has room; counting only the bench would think a team with two
   starting receivers and none on the bench was short of receivers.
 */
-function findPickup(trending, players, projections, schedule, week,
-                    ownedIds, myPlayers, depthIndex, startingSlots, allMine) {
-  if (!Array.isArray(trending) || !trending.length) return null;
-
-  /* Candidates: trending adds nobody in the league owns. */
-  let candidates = [];
-  for (const row of trending) {
-    const id = row && row.player_id;
-    if (!id || ownedIds.has(id)) continue;
-    const p = describe(id, players, projections, schedule, week);
-    if (!p || isDeadWeight(p)) continue;
-    /* Has everyone ahead of him been ruled out? Then he is first in line
-       for the touches, which is the moment a backup becomes worth owning. */
-    p.nextInLine = depthIndex ? blockersOut(id, players, depthIndex) : null;
-    candidates.push(p);
-  }
+function findPickup(pool, myPlayers, depthIndex, startingSlots, allMine) {
+  let candidates = (pool || []).slice(0, 60);
   if (!candidates.length) return null;
 
   /*
@@ -1001,20 +1107,18 @@ async function loadEverything(cfg) {
     for (const id of (r.players || [])) ownedIds.add(id);
   }
 
-  /* Unowned players worth knowing about, for the export. */
-  const freeAgents = (Array.isArray(trending) ? trending : [])
-    .map((row) => row && row.player_id)
-    .filter((id) => id && !ownedIds.has(id))
-    .map((id) => describe(id, players, projections, schedule, week))
-    .filter((p) => p && !p.health.out && !p.onBye)
-    .sort((a, b) => pts(b) - pts(a))
-    .slice(0, 8);
-
   const depthIndex = buildDepthIndex(players);
 
+  /* Unowned players worth knowing about, for the export. */
+  const trendingIds = new Set((Array.isArray(trending) ? trending : [])
+    .map((row) => row && row.player_id).filter(Boolean));
+
+  const faPool = buildFreeAgentPool(players, projections, schedule, week,
+                                    ownedIds, depthIndex, trendingIds);
+  const freeAgents = faPool.slice(0, 8);
+
   const myPlayers = lineup.map((s) => s.player).filter(Boolean).concat(bench);
-  const pickup = findPickup(trending, players, projections, schedule, week,
-                            ownedIds, bench.length ? bench : myPlayers,
+  const pickup = findPickup(faPool, bench.length ? bench : myPlayers,
                             depthIndex, startingSlots, myPlayers);
 
   /* ---- this week's matchup ---- */
@@ -1057,7 +1161,7 @@ async function loadEverything(cfg) {
     freeAgents,
     players,
     depthIndex,
-    byeAhead: upcomingByes(lineup, schedule, week, 3),
+    byeAhead: upcomingByes(lineup, bench, schedule, week, startingSlots),
     userId: user.user_id,
     hasProjections: !!projections,
     hasSchedule: !!schedule,

@@ -33,6 +33,12 @@ const FLEX_SHARE = { RB: 0.5, WR: 0.4, TE: 0.1 };
    because every starting slot he fits is already covered. */
 const BENCH_PENALTY = 25;
 
+/* Knocked off a player whose only route into the lineup is the flex slot.
+   Smaller than the bench penalty, because he does start - but a flex slot
+   is contested by three positions, so filling it is worth less than filling
+   a slot only he can fill. */
+const FLEX_PENALTY = 10;
+
 const draftState = {
   timer: null,
   statusTimer: null,
@@ -228,6 +234,22 @@ function recommend(ctx) {
   const unfilled = unfilledSlots(rosterPositions, myPlayers);
   const needed = neededPositions(unfilled);
 
+  /*
+    Not all need is equal, and treating it as though it were cost a real
+    pick. A flex slot accepts a running back, a receiver or a tight end, so
+    once a tight end is on the roster the flex slot still reports tight end
+    as "needed" - and a second tight end then competed at full value against
+    the first running back. That is how this recommended Colston Loveland
+    with Brock Bowers already drafted.
+
+    A player filling a slot only he can fill is worth more than one filling
+    a slot three positions are competing for. Dedicated need scores full,
+    flex-only need takes a smaller hit than the bench penalty, because a
+    flex starter does at least start.
+  */
+  const strictNeeded = neededPositions(unfilled.filter((s) => !FLEX_SLOTS[s]));
+  const flexNeeded = neededPositions(unfilled.filter((s) => FLEX_SLOTS[s]));
+
   /* If we are down to exactly as many picks as we have holes to fill,
      stop taking value and start filling holes. This is what stops you
      finishing the draft with no kicker. */
@@ -281,7 +303,9 @@ function recommend(ctx) {
 
     /* A second quarterback never starts in a one-quarterback league. Depth
        at a position already covered is worth far less than it looks. */
-    p.score = needed.has(p.pos) ? p.urgency : (p.urgency - BENCH_PENALTY);
+    p.score = strictNeeded.has(p.pos) ? p.urgency
+      : flexNeeded.has(p.pos) ? (p.urgency - FLEX_PENALTY)
+        : (p.urgency - BENCH_PENALTY);
   }
 
   candidates.sort((a, b) => (b.score - a.score) || (b.vor - a.vor));
