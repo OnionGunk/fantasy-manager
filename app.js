@@ -670,13 +670,20 @@ function buildTodoList(ctx) {
       a player good enough to start right away is worth a real chunk of the
       remaining budget; bench depth is worth a token amount.
     */
-    const starterPoints = ctx.lineup
+    /*
+      Compare him with the man he would actually replace - the weakest
+      starter at his own position - not with the lowest-scoring starter on
+      the team. That is always the kicker, and every quarterback, running
+      back and receiver on earth outscores a kicker. Judged that way the
+      app rated a third-string quarterback as an instant starter and asked
+      for 30% of a season's budget.
+    */
+    const samePos = ctx.lineup
       .map((s) => s.player)
-      .filter((p) => p && p.points != null)
+      .filter((p) => p && p.points != null && p.pos === add.pos)
       .map((p) => p.points);
-    const worstStarter = starterPoints.length ? Math.min.apply(null, starterPoints) : null;
-    const wouldStart = worstStarter != null && add.points != null
-      && add.points > worstStarter;
+    const wouldStart = add.points != null
+      && (!samePos.length || add.points > Math.min.apply(null, samePos));
     const remaining = ctx.waivers ? ctx.waivers.remaining : null;
     const bid = (remaining && remaining > 0)
       ? Math.max(1, Math.round(remaining * (wouldStart ? 0.3 : 0.08)))
@@ -706,7 +713,10 @@ function buildTodoList(ctx) {
           ? (' before they run on <b>' + ctx.waivers.day + ' morning</b>')
           : ' before your league\'s next waiver run')
         + (bid
-          ? ('. Bid <b>$' + bid + '</b> of your remaining $' + remaining + '. '
+          ? ('. <b>Check Sleeper first:</b> if his button says <b>Add</b> he is '
+            + 'a free agent and costs nothing, so just take him. Only if it '
+            + 'says <b>Claim</b> does this go through waivers - then bid <b>$'
+            + bid + '</b> of your remaining $' + remaining + '. '
             + (wouldStart
               ? 'He would start for you straight away, which is worth paying for.'
               : 'He is bench depth, so keep it cheap.')
@@ -806,12 +816,18 @@ function buildTodoList(ctx) {
 }
 
 /* Find a worthwhile free agent, if there is one. */
+/*
+  `myPlayers` is the pool we are allowed to drop from - the bench, when
+  there is one. `allMine` is the whole roster, and is what decides whether
+  a position has room; counting only the bench would think a team with two
+  starting receivers and none on the bench was short of receivers.
+*/
 function findPickup(trending, players, projections, schedule, week,
-                    ownedIds, myPlayers, depthIndex) {
+                    ownedIds, myPlayers, depthIndex, startingSlots, allMine) {
   if (!Array.isArray(trending) || !trending.length) return null;
 
   /* Candidates: trending adds nobody in the league owns. */
-  const candidates = [];
+  let candidates = [];
   for (const row of trending) {
     const id = row && row.player_id;
     if (!id || ownedIds.has(id)) continue;
@@ -823,6 +839,48 @@ function findPickup(trending, players, projections, schedule, week,
     candidates.push(p);
   }
   if (!candidates.length) return null;
+
+  /*
+    Drop anyone who could never reach the lineup.
+
+    Quarterbacks outscore every other position in raw points, so sorting
+    trending adds by projection alone recommends a quarterback almost every
+    week - including a third one, in a league that starts a single one. The
+    first real recommendation this app made was to spend a third of a
+    season's waiver budget on exactly that.
+
+    A candidate earns his place only if we are short of bodies at his
+    position, or he is better than the worst one we already have there.
+  */
+  const roster = (allMine && allMine.length) ? allMine : myPlayers;
+  const room = {};
+  for (const slot of (startingSlots || [])) {
+    for (const pos of (FLEX_SLOTS[slot] || [slot])) {
+      room[pos] = (room[pos] || 0) + 1;
+    }
+  }
+  const worstOwnedAt = {};
+  const ownedAt = {};
+  for (const p of roster) {
+    if (!p || !p.pos) continue;
+    ownedAt[p.pos] = (ownedAt[p.pos] || 0) + 1;
+    const cur = worstOwnedAt[p.pos];
+    if (cur === undefined || pts(p) < pts(cur)) worstOwnedAt[p.pos] = p;
+  }
+
+  /* Without slot information we cannot judge fit, so judge nothing. */
+  const useful = !Object.keys(room).length ? candidates : candidates.filter((c) => {
+    const slots = room[c.pos] || 0;
+    /* No slot on this roster will ever accept him. */
+    if (slots === 0) return false;
+    /* Short-handed at the position: any warm body is an upgrade on nobody. */
+    if ((ownedAt[c.pos] || 0) < slots) return true;
+    /* Otherwise he has to beat the man he would replace. */
+    const worst = worstOwnedAt[c.pos];
+    return !worst || pts(c) > pts(worst);
+  });
+  if (!useful.length) return null;
+  candidates = useful;
 
   /* A man who just inherited a starting job beats a marginally higher
      projection, because the projection has not caught up to the news yet. */
@@ -957,7 +1015,7 @@ async function loadEverything(cfg) {
   const myPlayers = lineup.map((s) => s.player).filter(Boolean).concat(bench);
   const pickup = findPickup(trending, players, projections, schedule, week,
                             ownedIds, bench.length ? bench : myPlayers,
-                            depthIndex);
+                            depthIndex, startingSlots, myPlayers);
 
   /* ---- this week's matchup ---- */
   let matchup = null;
@@ -1602,6 +1660,42 @@ let lastData = null;
    dragging them back into it against their will. */
 let draftDismissed = false;
 
+/* When the data on screen was last loaded successfully. */
+let lastLoadedAt = 0;
+
+/*
+  How old what is on screen may get before we refetch, and before we say
+  on the page that it cannot be trusted.
+
+  This matters more than it sounds. The page used to load once and never
+  again, so an app left in the background since Wednesday would still be
+  showing Wednesday's injuries on Sunday morning - looking entirely
+  normal - while the user set their lineup from it. Five minutes is short
+  enough that a returning user is always looking at live data.
+*/
+const STALE_MS = 5 * MIN;
+
+/*
+  Say how old the numbers are, and say it loudly once they are too old.
+  Called on a timer as well as after a load, so the warning appears while
+  the page is sitting open rather than only when something else happens.
+*/
+function renderUpdatedAt() {
+  const node = el('updated-at');
+  if (!node) return;
+  if (!lastLoadedAt) { node.textContent = ''; return; }
+
+  const time = new Date(lastLoadedAt).toLocaleTimeString(
+    undefined, { hour: 'numeric', minute: '2-digit' });
+  const stale = (Date.now() - lastLoadedAt) > STALE_MS;
+
+  node.textContent = stale
+    ? ('Out of date - last loaded ' + time + '. Pull to refresh before '
+      + 'trusting anything here.')
+    : ('Updated ' + time);
+  node.classList.toggle('stale', stale);
+}
+
 /* The button only makes sense while there is a draft to open. */
 function renderDraftButton(data) {
   const btn = el('btn-draft');
@@ -1642,8 +1736,8 @@ async function run(cfg) {
     renderMatchup(data);
     renderRoster(data);
 
-    el('updated-at').textContent = 'Updated ' + new Date().toLocaleTimeString(
-      undefined, { hour: 'numeric', minute: '2-digit' });
+    lastLoadedAt = Date.now();
+    renderUpdatedAt();
 
     el('setup').hidden = true;
     el('fatal').hidden = true;
@@ -1717,9 +1811,40 @@ function wireControls() {
   });
 }
 
+/*
+  Refetch whenever the user comes back to the app.
+
+  On iOS a home-screen app is not closed when it is backgrounded, it is
+  frozen. Every pick made in the Sleeper app, every check of the score,
+  leaves this page suspended - and it used to thaw showing whatever it
+  had loaded days ago, with no hint that anything was wrong.
+
+  `visibilitychange` covers backgrounding, `pageshow` covers the back/
+  forward cache, and `focus` covers a desktop window regaining focus.
+  All three are cheap: nothing refetches unless the data is actually old.
+*/
+function wireFreshness() {
+  const onReturn = () => {
+    if (document.visibilityState === 'hidden') return;
+    renderUpdatedAt();
+
+    const cfg = loadConfig();
+    if (!cfg || !cfg.username || !cfg.leagueId) return;
+    if (Date.now() - lastLoadedAt > STALE_MS) run(cfg);
+  };
+
+  document.addEventListener('visibilitychange', onReturn);
+  window.addEventListener('pageshow', onReturn);
+  window.addEventListener('focus', onReturn);
+
+  /* Keeps the warning honest on a page nobody has touched for an hour. */
+  setInterval(renderUpdatedAt, 30 * 1000);
+}
+
 function start() {
   wireControls();
   wireTooltips();
+  wireFreshness();
 
   const cfg = loadConfig();
   if (cfg && cfg.username && cfg.leagueId) run(cfg);

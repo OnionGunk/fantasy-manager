@@ -90,6 +90,17 @@ main, .setup, .fatal, .draft {
 }
 
 .subtle { color: var(--text-dim); font-size: 0.875rem; margin: 2px 0 0; }
+
+/* Data too old to set a lineup from. This has to be impossible to skim
+   past: the failure it guards against looks completely normal on screen. */
+.subtle.stale {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-weight: 600;
+}
 .tiny   { font-size: 0.78rem; }
 
 .btn-icon {

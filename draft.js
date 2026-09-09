@@ -525,7 +525,21 @@ async function checkDraftStatus() {
     draftState.lastPickCount = -1;  /* force a full redraw */
     refreshDraft();
   }
-  if (draft.status === 'complete') stopPolling();
+  /*
+    The draft is over. Stopping the timers is not enough: draft mode is an
+    overlay that hides the rest of the app, and the poll we have just killed
+    was the only thing still refreshing it. Leaving it up strands the user on
+    a finished draft board, and the team behind it was loaded before anyone
+    had picked - so it shows an empty roster.
+
+    Step out and reload, so they land on the team they just drafted.
+  */
+  if (draft.status === 'complete') {
+    stopPolling();
+    exitDraftMode();
+    const cfg = (typeof loadConfig === 'function') ? loadConfig() : null;
+    if (cfg && typeof run === 'function') run(cfg);
+  }
 }
 
 function stopPolling() {
